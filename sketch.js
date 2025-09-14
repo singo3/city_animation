@@ -1,18 +1,19 @@
 // Particle City — 粒子で「道路」と「建物」を描く
-// + 波紋（残像なし） + 平面波（粒の波） + マウスダイナミクス
+// + 波紋（残像なし） + 平面波（粒の波） + マウス/タッチ ダイナミクス
 // + ★エッジランナー：輪郭上を粒が周回し、静的点描なしで外形を“粒だけ”で描く
+// + ★モバイル対応：タップで波紋、指1本でPCマウス同等の挙動
 
 // ---------- Params ----------
 const q = new URLSearchParams(location.search);
 const HUE   = +q.get('hue')   || 40.57;     // 色相（HSL 0–360）
-const BDEN  = +q.get('bden')  || 1.0;     // 建物内部ターゲットの保持率スケール
-const RDEN  = +q.get('rden')  || 10.0;       // 道路粒子密度
+const BDEN  = +q.get('bden')  || 1.0;       // 建物内部ターゲットの保持率スケール
+const RDEN  = +q.get('rden')  || 10.0;      // 道路粒子密度
 const FLOW  = +q.get('flow')  || 0.5;       // 道路粒子の基本速度
 const FLOW_NOISE = +(q.get('fnoise') || 0.1);
 const TURB       = +(q.get('turb')   || 1.0);
 const GUST       = +(q.get('gust')   || 2.0);
 const RETARGET   = +(q.get('jump')   || 0.1);
-const SHOW_CONTOURS = true;                // ←使いません（粒だけで外形を出す）
+const SHOW_CONTOURS = true;                 // （デバッグ用の静的点描）※外形は粒のみで描画
 
 // ---- Ripple overlay params ----
 const RIPPLE        = (q.get('ripple') ?? '1') !== '0';
@@ -35,7 +36,7 @@ const W_DEPTH  = +(q.get('wdepth')  || 1.0);
 const W_DIRRAD = deg2rad(+q.get('wdir') || 0);
 const W_PUSH   = +(q.get('wpush')   || 0.12);
 
-// ---- Mouse dynamics params ----
+// ---- Mouse/Touch dynamics params ----
 const MINT     = (q.get('mint') ?? '1') !== '0';
 const MMODE    = (q.get('mmode') || 'hybrid'); // 'scoop'|'attract'|'repel'|'swirl'|'hybrid'
 const MR       = +(q.get('mr')    || 360);
@@ -45,14 +46,14 @@ const MBOOST   = +(q.get('mboost')|| 0.6);
 const MPULSE   = +(q.get('mpulse')|| 1.2);
 
 // ---- Edge runners（★輪郭を粒でなぞる）----
-const ERUN      = (q.get('erun')   ?? '1') !== '0'; // エッジランナーON/OFF
-const E_RING    = +(q.get('ering')   || 2.0);   // 輪郭から内側オフセット（px）
-const ER_STEP   = +(q.get('erstep')  || 12.0);  // ランナーの密度（小さいほど多い）
-const ER_SPEED  = +(q.get('erspeed') || 1.35);  // 基本速度（px/フレーム）
-const ER_JIT    = +(q.get('erjit')   || 0.9);   // 法線方向ジッター強さ
-const ER_SIZE   = +(q.get('ersize')  || 1.7);   // 粒サイズ基準
-const ER_ALPHA  = +(q.get('eralpha') || 0.85);  // 粒アルファ基準
-const ER_TWINK  = +(q.get('ertwink') || 0.35);  // 明滅（サイズ/アルファ）係数
+const ERUN      = (q.get('erun')   ?? '1') !== '0';
+const E_RING    = +(q.get('ering')   || 2.0);
+const ER_STEP   = +(q.get('erstep')  || 12.0);
+const ER_SPEED  = +(q.get('erspeed') || 1.35);
+const ER_JIT    = +(q.get('erjit')   || 0.9);
+const ER_SIZE   = +(q.get('ersize')  || 1.7);
+const ER_ALPHA  = +(q.get('eralpha') || 0.85);
+const ER_TWINK  = +(q.get('ertwink') || 0.35);
 
 // ---------- State ----------
 let buildings = [];    // { poly:[{x,y}], holes?: [[{x,y}]], extras?: [poly] }
@@ -67,17 +68,27 @@ let bldgParticles = [];    // 建物内部の“スワール粒子”（控え�
 
 // ★輪郭を走るランナー（外形を描く主役）
 let edgeLoopsByBuilding = []; // rectId -> [{segs:[{ax,ay,bx,by,len,tx,ty,nx,ny}], total}]
-let edgeRunners = [];        // [{rectId, loopId, segIdx, sLocal, dir, speed, seed, x,y}]
+let edgeRunners = [];        // [{rectId, loopId, segIdx, sLocal, dir, speed, seed}]
 
 let ripples = [];
 
 let trailG, rippleG;
 let linkDist, binSize, cols, rows;
-let mouseVX = 0, mouseVY = 0, mouseSpeed = 0;
+
+// --- Unified pointer (mouse or single-touch) ---
+let pointerX = 0, pointerY = 0;           // 現在位置（マウス/指）
+let prevPointerX = 0, prevPointerY = 0;   // 前フレーム位置
+let mouseVX = 0, mouseVY = 0, mouseSpeed = 0; // 既存ロジックを流用
 
 // ---------- Setup ----------
 function setup(){
-  createCanvas(window.innerWidth, window.innerHeight);
+  const cnv = createCanvas(window.innerWidth, window.innerHeight);
+  // スクロール/ズーム抑止（モバイル）
+  if (cnv && cnv.canvas) {
+    cnv.canvas.style.touchAction = 'none';        // Android/Chrome, iOS/Safari
+    cnv.canvas.oncontextmenu = e => e.preventDefault(); // 長押しメニュー抑止
+  }
+
   const pd = (window.devicePixelRatio > 1 ? 1.5 : 1);
   pixelDensity(pd);
   colorMode(HSL,360,100,100,1);
@@ -92,9 +103,13 @@ function setup(){
   linkDist = constrain(L*0.07, 90, 160);
   binSize  = linkDist; cols = ceil(width/binSize); rows = ceil(height/binSize);
 
-  designCity();      // ←あなたのレイアウト（下に同梱）
-  bakeTargets();     // 道路/建物のターゲット + ★輪郭ループの前計算
-  seedParticles();   // 道路粒子 + 建物内部粒子 + ★エッジランナー
+  // 初期ポインタ
+  pointerX = prevPointerX = width*0.5;
+  pointerY = prevPointerY = height*0.5;
+
+  designCity();
+  bakeTargets();
+  seedParticles();
 
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) noLoop(); else loop(); });
 }
@@ -110,10 +125,10 @@ function planeWave(x, y, tf){
 }
 function gauss(x, sigma){ const s = sigma||1; return Math.exp(-(x*x)/(2*s*s)); }
 
-// ---------- Mouse force ----------
+// ---------- Mouse/Touch unified force ----------
 function mouseForce(px, py, scale=1.0){
   if (!MINT) return null;
-  const dx = px - mouseX, dy = py - mouseY;
+  const dx = px - pointerX, dy = py - pointerY;
   const r2 = MR * MR, d2 = dx*dx + dy*dy; if (d2 > r2) return null;
   const d = Math.sqrt(d2)+1e-6;
   const g = Math.exp(-(d*d) / (2 * (MR*0.6) * (MR*0.6)));
@@ -129,9 +144,20 @@ function mouseForce(px, py, scale=1.0){
 function draw(){
   const tNow = frameCount * 0.003;
 
-  // smooth mouse velocity
-  const mdx = mouseX - (pmouseX || mouseX), mdy = mouseY - (pmouseY || mouseY);
-  mouseVX = lerp(mouseVX, mdx, 0.4); mouseVY = lerp(mouseVY, mdy, 0.4);
+  // 1) 現在のポインタ（マウス or 指1本）を取得
+  if (touches && touches.length > 0){
+    pointerX = touches[0].x;
+    pointerY = touches[0].y;
+  } else {
+    pointerX = mouseX;
+    pointerY = mouseY;
+  }
+
+  // 2) ポインタ速度（なめらかに）
+  const mdx = pointerX - prevPointerX;
+  const mdy = pointerY - prevPointerY;
+  mouseVX = lerp(mouseVX, mdx, 0.4);
+  mouseVY = lerp(mouseVY, mdy, 0.4);
   mouseSpeed = Math.hypot(mouseVX, mouseVY);
 
   trailG.clear();
@@ -139,7 +165,7 @@ function draw(){
   // ★輪郭ランナー（外形の可視化の主役）
   if (ERUN) drawEdgeRunners(trailG, tNow);
 
-  // 道路 & 建物内部の動的粒子（背景的な“都市の息遣い”）
+  // 道路 & 建物内部の動的粒子
   drawRoadParticles(trailG, tNow);
   drawBuildingInterior(trailG, tNow);
 
@@ -150,6 +176,10 @@ function draw(){
   background(0, 0, 5, 1);
   image(trailG, 0, 0, width, height);
   if (RIPPLE) image(rippleG, 0, 0, width, height);
+
+  // 3) 前フレームとして保存
+  prevPointerX = pointerX;
+  prevPointerY = pointerY;
 }
 
 // ---------- Edge runners（輪郭を走る粒） ----------
@@ -158,23 +188,19 @@ function drawEdgeRunners(g, tNow){
     const loop = edgeLoopsByBuilding[p.rectId][p.loopId];
     let seg = loop.segs[p.segIdx];
 
-    // 現在位置（セグメント上の距離 sLocal ）
     let t = (seg.len > 1e-6) ? (p.sLocal / seg.len) : 0.0;
     t = constrain(t, 0, 1);
     let cx = seg.ax + (seg.bx - seg.ax) * t;
     let cy = seg.ay + (seg.by - seg.ay) * t;
 
-    // 法線方向に内側オフセット + ジッター
     const offN = E_RING + ER_JIT * sin(frameCount*0.03 + p.seed);
     cx += seg.nx * offN; cy += seg.ny * offN;
 
-    // ちょい接線ジッター（停滞防止）
     const offT = 0.45 * sin(frameCount*0.027 + p.seed*1.7);
     cx += seg.tx * offT; cy += seg.ty * offT;
 
-    // 見た目（平面波 + マウス近傍で明滅増）
     const F = planeWave(cx, cy, frameCount);
-    const gMouse = gauss(dist(cx,cy,mouseX,mouseY), 140);
+    const gMouse = gauss(dist(cx,cy,pointerX,pointerY), 140);
     const tw = 1.0 + ER_TWINK * (0.6*F + 0.4*gMouse);
     const size = ER_SIZE * tw;
     const alpha = ER_ALPHA * tw;
@@ -182,14 +208,12 @@ function drawEdgeRunners(g, tNow){
     g.fill(HUE, 75, 58, alpha);
     g.circle(cx, cy, size);
 
-    // 次フレームの進行速度（接線方向への加速）
     const fv = flowVec(cx, cy, tNow).mult(0.6*FLOW_NOISE);
-    const dotT = fv.x*seg.tx + fv.y*seg.ty;           // フローフィールドの接線成分
+    const dotT = fv.x*seg.tx + fv.y*seg.ty;
     const base = p.speed * (1 + 0.22*sin(frameCount*0.02 + p.seed));
     const mBoost = (1 + 0.75*MBOOST*(mouseSpeed/18)*gMouse);
-    let ds = p.dir * (base*mBoost + dotT*1.0);        // px / frame
+    let ds = p.dir * (base*mBoost + dotT*1.0);
 
-    // 進行（セグメントをまたぐ）
     p.sLocal += ds;
     while (p.sLocal >= seg.len){ p.sLocal -= seg.len; p.segIdx = (p.segIdx + 1) % loop.segs.length; seg = loop.segs[p.segIdx]; }
     while (p.sLocal < 0){ p.segIdx = (p.segIdx - 1 + loop.segs.length) % loop.segs.length; seg = loop.segs[p.segIdx]; p.sLocal += seg.len; }
@@ -205,15 +229,12 @@ function drawRoadParticles(g, tNow){
     const tan=createVector(t.tx,t.ty).mult(0.22*FLOW*breath);
     const fv=flowVec(p.x,p.y,tNow).mult(0.6*FLOW_NOISE*TURB);
 
-    // 平面波推進
     const F=planeWave(p.x,p.y,frameCount);
     if (WAVE && W_PUSH){ p.v.x += dirx*W_PUSH*F; p.v.y += diry*W_PUSH*F; }
 
-    // マウス強風（距離 + 速度）
-    const dmx=p.x-mouseX, dmy=p.y-mouseY, dm2=dmx*dmx+dmy*dmy;
+    const dmx=p.x-pointerX, dmy=p.y-pointerY, dm2=dmx*dmx+dmy*dmy;
     if (dm2 < 140*140){ const amp = (1 - sqrt(dm2)/140); tan.mult(1 + GUST * amp * (0.5 + 0.5 * min(1, mouseSpeed/10))); }
 
-    // マウス力
     const mf = mouseForce(p.x, p.y, 1.0); if (mf){ p.v.x += mf.x; p.v.y += mf.y; }
 
     p.v.add(to).add(tan).add(fv);
@@ -257,8 +278,7 @@ function drawBuildingInterior(g, tNow){
     const F = planeWave(p.x, p.y, frameCount);
     if (WAVE && W_PUSH){ p.v.x += dirx * W_PUSH * 0.4 * F; p.v.y += diry * W_PUSH * 0.4 * F; }
 
-    // 近傍マウス吸引/反発（弱）
-    const dx = p.x - mouseX, dy = p.y - mouseY;
+    const dx = p.x - pointerX, dy = p.y - pointerY;
     const d2 = dx*dx + dy*dy;
     if (d2 < 120*120){
       const d = sqrt(d2)+0.001;
@@ -286,7 +306,6 @@ function drawBuildingInterior(g, tNow){
       p.x = t.x + random(-2,2); p.y = t.y + random(-2,2); p.v.mult(0);
     }
 
-    // 輪郭を邪魔しない淡めの見え方
     const baseAlpha = 0.45 + 0.06 * breath;
     const baseSize  = 1.2 + 0.35 * breath;
     const w01 = (F + 1) * 0.5;
@@ -305,11 +324,15 @@ function emitRipple(){
   ripples.push({ x: h.x, y: h.y, r: 10, life: 0, alpha: R_ALPHA, seed: random(1000) });
   if (ripples.length > R_MAX) ripples.shift();
 }
+function rippleAt(x,y){
+  ripples.push({ x, y, r: 10, life: 0, alpha: R_ALPHA*1.2, seed: random(1000) });
+  if (ripples.length > R_MAX) ripples.shift();
+}
 function drawRipplesOn(g){
   if (random() < R_EMIT) emitRipple();
   g.clear();
   g.push();
-  g.blendMode(BLEND); // 背景色問わず破綻しにくい
+  g.blendMode(BLEND);
   for (let i = ripples.length - 1; i >= 0; i--){
     const w = ripples[i];
     w.life += 1;
@@ -488,14 +511,14 @@ function bakeTargets(){
   }
   if (BDEN !== 1.0){ const keepB = constrain(BDEN, 0.4, 2.0); bldgFillTargets = bldgFillTargets.filter(()=> random() < keepB); }
 
-  // ★輪郭ループを作成（外形 + extras + holes）
+  // ★輪郭ループ生成
   edgeLoopsByBuilding = buildings.map(b=>{
     const loops = [];
     const paths = [b.poly].concat(b.extras||[]).concat(b.holes||[]);
     for (const poly of paths){
       if (!poly || poly.length < 2) continue;
-      const area = signedArea(poly);                       // CCW: +, CW: -
-      const side = (area >= 0) ? +1 : -1;                  // inside が“左”なら +1
+      const area = signedArea(poly);       // CCW: +, CW: -
+      const side = (area >= 0) ? +1 : -1;  // inside が“左”なら +1
       const segs = [];
       let total = 0;
       for (let i=0;i<poly.length;i++){
@@ -503,7 +526,7 @@ function bakeTargets(){
         const vx = c.x - a.x, vy = c.y - a.y;
         const len = Math.hypot(vx,vy); if (len < 1e-6) continue;
         const tx = vx/len, ty = vy/len;
-        const nx = (ty) * side;                            // 内側法線
+        const nx = (ty) * side;            // 内側法線
         const ny = (-tx) * side;
         segs.push({ax:a.x, ay:a.y, bx:c.x, by:c.y, len, tx, ty, nx, ny});
         total += len;
@@ -531,7 +554,7 @@ function seedParticles(){
   }
 
   // Building interior（控えめ）
-  const nB = min(bldgFillTargets.length, 1100); // 以前より少なめに
+  const nB = min(bldgFillTargets.length, 1100);
   for (let i=0;i<nB;i++){
     const t = bldgFillTargets[floor(random(bldgFillTargets.length))];
     bldgParticles.push({
@@ -552,15 +575,12 @@ function seedParticles(){
         if (len > 0){ loopIndex.push({rectId:rid, loopId:li, len}); sumLen += len; }
       }
     }
-    const targetCount = constrain(floor(sumLen / max(2, ER_STEP)), 300, 2400); // 上限で負荷制御
+    const targetCount = constrain(floor(sumLen / max(2, ER_STEP)), 300, 2400);
     for (const L of loopIndex){
-      const loops = edgeLoopsByBuilding[L.rectId];
-      const loop  = loops[L.loopId];
+      const loop  = edgeLoopsByBuilding[L.rectId][L.loopId];
       const quota = max(1, floor(targetCount * (L.len / sumLen)));
       for (let k=0; k<quota; k++){
-        // ランダムなセグメントとその局所長
         const sPick = random(L.len);
-        // sPick に対応するセグメントを探す
         let acc = 0, segIdx = 0, sLocal = 0;
         for (let i=0; i<loop.segs.length; i++){
           const len = loop.segs[i].len;
@@ -578,9 +598,9 @@ function seedParticles(){
   }
 }
 
-// ---------- Helpers (contours debug 未使用) ----------
+// ---------- Helpers (contours debug) ----------
 function drawBuildingContoursOn(g){
-  // 使わないが、デバッグしたい時に true にして使う
+  if (!SHOW_CONTOURS) return;
   g.stroke(HUE, 40, 50, 0.45);
   g.strokeWeight(1);
   const step = 4;
@@ -662,22 +682,41 @@ function signedArea(poly){
   return a * 0.5; // +:CCW, -:CW
 }
 
-// ---------- Mouse pulse ----------
-function mousePressed(){
-  if (RIPPLE){
-    ripples.push({ x: mouseX, y: mouseY, r: 10, life: 0, alpha: R_ALPHA*1.2, seed: random(1000) });
-    if (ripples.length > R_MAX) ripples.shift();
-  }
+// ---------- Pointer pulses ----------
+function pointerPulseAt(x, y){
+  if (RIPPLE) rippleAt(x, y);
   const R = MR * 0.9, R2 = R*R;
   const kick = 1.0 * MPULSE;
   for (let i=0; i<roadParticles.length; i+=2){
     const p = roadParticles[i];
-    const dx = p.x - mouseX, dy = p.y - mouseY; const d2 = dx*dx + dy*dy;
+    const dx = p.x - x, dy = p.y - y; const d2 = dx*dx + dy*dy;
     if (d2 < R2){ const d = Math.sqrt(d2)||1; p.v.x += (dx/d) * kick; p.v.y += (dy/d) * kick; }
   }
   for (let i=0; i<bldgParticles.length; i+=3){
     const p = bldgParticles[i];
-    const dx = p.x - mouseX, dy = p.y - mouseY; const d2 = dx*dx + dy*dy;
+    const dx = p.x - x, dy = p.y - y; const d2 = dx*dx + dy*dy;
     if (d2 < R2){ const d = Math.sqrt(d2)||1; p.v.x += (dx/d) * kick*0.7; p.v.y += (dy/d) * kick*0.7; }
   }
 }
+
+// ---------- Mouse / Touch handlers ----------
+// PC（マウス）—クリックで波紋＆パルス
+function mousePressed(){
+  pointerPulseAt(pointerX, pointerY);
+  return false; // 既定動作抑止
+}
+// スマホ/タブレット（1本指）
+function touchStarted(){
+  if (touches && touches.length > 0){
+    pointerX = touches[0].x; pointerY = touches[0].y;
+    pointerPulseAt(pointerX, pointerY); // タップ＝クリック相当
+  }
+  return false; // スクロール等の既定動作を抑止（iOS/Android）
+}
+function touchMoved(){
+  if (touches && touches.length > 0){
+    pointerX = touches[0].x; pointerY = touches[0].y; // 指の位置を反映
+  }
+  return false; // 既定動作抑止
+}
+function touchEnded(){ return false; } // 既定動作抑止
