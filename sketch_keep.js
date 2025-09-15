@@ -12,7 +12,7 @@ const q = new URLSearchParams(location.search);
 const HUE   = +q.get('hue')   || 40.57;  // 色相（HSLの0–360°）
 const BDEN  = +q.get('bden')  || 0.1;    // 建物の粒子密度
 const RDEN  = +q.get('rden')  || 0.5;    // 道路の粒子密度
-const FLOW  = +q.get('flow')  || 0.5;    // 道路粒子の基本速度
+const FLOW  = +q.get('flow')  || 0.25;   // 道路粒子の基本速度（デフォルトを半減）
 const FLOW_NOISE = +(q.get('fnoise') || 0.1); // フローフィールド強さ
 const TURB       = +(q.get('turb')   || 1.0); // 乱流係数
 const GUST       = +(q.get('gust')   || 2.0); // マウス“ガスト”
@@ -86,7 +86,7 @@ function setup(){
   trailG.colorMode(HSL,360,100,100,1);
   trailG.noStroke();
   // trailG.background(220,18,7,1); // 初期化（ベース色）
-  trailG.background(0, 0, 5, 1); // 初期化（白）
+  trailG.background(0, 0, 100, 1); // 初期化（白）
 
   rippleG = createGraphics(width, height);
   rippleG.pixelDensity(pd);
@@ -183,7 +183,7 @@ function draw(){
 
   // 3) 合成
   // background(220, 18, 7, 1);
-  background(0, 0, 5, 1);
+  background(0, 0, 100, 1);
   image(trailG, 0, 0, width, height);
   if (RIPPLE) image(rippleG, 0, 0, width, height);
 }
