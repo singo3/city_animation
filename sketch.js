@@ -172,8 +172,8 @@ function draw(){
   // 波紋
   if (RIPPLE) drawRipplesOn(rippleG);
 
-  // compose（黒背景）
-  background(0, 0, 5, 1);
+  // compose（白背景）
+  background(0, 0, 100, 1);
   image(trailG, 0, 0, width, height);
   if (RIPPLE) image(rippleG, 0, 0, width, height);
 

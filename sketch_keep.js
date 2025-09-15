@@ -86,7 +86,7 @@ function setup(){
   trailG.colorMode(HSL,360,100,100,1);
   trailG.noStroke();
   // trailG.background(220,18,7,1); // 初期化（ベース色）
-  trailG.background(0, 0, 5, 1); // 初期化（白）
+  trailG.background(0, 0, 100, 1); // 初期化（白）
 
   rippleG = createGraphics(width, height);
   rippleG.pixelDensity(pd);
@@ -183,7 +183,7 @@ function draw(){
 
   // 3) 合成
   // background(220, 18, 7, 1);
-  background(0, 0, 5, 1);
+  background(0, 0, 100, 1);
   image(trailG, 0, 0, width, height);
   if (RIPPLE) image(rippleG, 0, 0, width, height);
 }
