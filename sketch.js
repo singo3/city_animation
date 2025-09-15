@@ -8,7 +8,7 @@ const q = new URLSearchParams(location.search);
 const HUE   = +q.get('hue')   || 40.57;     // 色相（HSL 0–360）
 const BDEN  = +q.get('bden')  || 1.0;       // 建物内部ターゲットの保持率スケール
 const RDEN  = +q.get('rden')  || 10.0;      // 道路粒子密度
-const FLOW  = +q.get('flow')  || 0.5;       // 道路粒子の基本速度
+const FLOW  = +q.get('flow')  || 0.25;      // 道路粒子の基本速度（デフォルトを半減）
 const FLOW_NOISE = +(q.get('fnoise') || 0.1);
 const TURB       = +(q.get('turb')   || 1.0);
 const GUST       = +(q.get('gust')   || 2.0);
@@ -49,7 +49,7 @@ const MPULSE   = +(q.get('mpulse')|| 1.2);
 const ERUN      = (q.get('erun')   ?? '1') !== '0';
 const E_RING    = +(q.get('ering')   || 2.0);
 const ER_STEP   = +(q.get('erstep')  || 12.0);
-const ER_SPEED  = +(q.get('erspeed') || 1.35);
+const ER_SPEED  = +(q.get('erspeed') || 0.675);
 const ER_JIT    = +(q.get('erjit')   || 0.9);
 const ER_SIZE   = +(q.get('ersize')  || 1.7);
 const ER_ALPHA  = +(q.get('eralpha') || 0.85);
