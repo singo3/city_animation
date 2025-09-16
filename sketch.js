@@ -1,626 +1,520 @@
-// Particle City — 粒子で「道路」と「建物」を描く
-// + 波紋（残像なし） + 平面波（粒の波） + マウス/タッチ ダイナミクス
-// + ★エッジランナー：輪郭上を粒が周回し、静的点描なしで外形を“粒だけ”で描く
-// + ★モバイル対応：タップで波紋、指1本でPCマウス同等の挙動
+// Particle City — 斜め上（固定カメラ）× 白背景 × Hue=40.57
+// 軽量：道路/人を抑制、波紋分割を削減、走路サンプリング抑制
+// 見せ場：エッジランナー増量＋ハロ
+// 追加：z=0 の地面をうっすら粒で可視化（gminで密度下限を制御）
 
-// ---------- Params ----------
+// --- 基本定数 ---
+const DEG = Math.PI / 180;
+const TAU = Math.PI * 2;
+function rad(d){ return d * DEG; }
+
+// --- パラメータ ---
 const q = new URLSearchParams(location.search);
-const HUE   = +q.get('hue')   || 40.57;     // 色相（HSL 0–360）
-const BDEN  = +q.get('bden')  || 1.0;       // 建物内部ターゲットの保持率スケール
-const RDEN  = +q.get('rden')  || 10.0;      // 道路粒子密度
-const FLOW  = +q.get('flow')  || 0.25;      // 道路粒子の基本速度（デフォルトを半減）
-const FLOW_NOISE = +(q.get('fnoise') || 0.1);
-const TURB       = +(q.get('turb')   || 1.0);
-const GUST       = +(q.get('gust')   || 2.0);
-const RETARGET   = +(q.get('jump')   || 0.1);
-const SHOW_CONTOURS = true;                 // （デバッグ用の静的点描）※外形は粒のみで描画
+const HUE        = +(q.get('hue') || 40.57);
+const SAT        = +(q.get('sat') || 75);
+const LIT_BASE   = +(q.get('lit') || 58);
+const PD         = +(q.get('pd')  || (window.devicePixelRatio>1 ? 1.5 : 1));
 
-// ---- Ripple overlay params ----
-const RIPPLE        = (q.get('ripple') ?? '1') !== '0';
-const R_MODE        = (q.get('rmode')  || 'both'); // 'dot'|'grad'|'both'
-const R_MAX         = +(q.get('rmax')  || 8);
-const R_EMIT        = +(q.get('remit') || 0.01);
-const R_SPEED       = +(q.get('rspeed')|| 1.0);
-const R_THICK       = +(q.get('rthick')|| 14);
-const R_SEGS        = +(q.get('rsegs') || 90);
-const R_JIT         = +(q.get('rjit')  || 0.8);
-const R_ALPHA       = +(q.get('ralpha')|| 0.5);
-const HUB_RATE      = +(q.get('hubrate')|| 0.6);
+// 粒子配分
+const DEN_EDGE   = +(q.get('denEdge')   || 2.2);
+const DEN_ROAD   = +(q.get('denRoad')   || 0.35);
+const DEN_PEOPLE = +(q.get('denPeople') || 0.35);
 
-// ---- Plane wave (粒の波) params ----
-const DEG = Math.PI / 180; function deg2rad(d){ return d * DEG; }
+// ★地面（ここがポイント）
+const DEN_GROUND = +(q.get('denGround') || 1.0);  // 既定で見える程度
+const G_STEP     = +(q.get('gstep')     || 10);  // ベース間隔（小ほど濃い）
+const G_MIN      = +(q.get('gmin')      || 1);   // 最小間隔の下限（超重要）
+const G_ALPHA    = +(q.get('galpha')    || 1); // 透明度ベース
+
+// ★地面の色（既定はHUEを流用）
+const G_HUE = +(q.get('ghue') ?? 40.57);  // 例: 青にしたい→ ?ghue=220
+const G_SAT = +(q.get('gsat') ?? 35);   // 地面の彩度（控えめが綺麗）例: ?gsat=35
+
+// ★地面粒子サイズの調整用（必要に応じてURLパラメータで上書きも可）
+const G_SIZE   = +(q.get('gsize')   || 2.5); // 基本半径（小さめ既定）
+const G_JIT    = +(q.get('gjit')    || 0.25); // 揺らぎ幅（0〜）
+const G_SHRINK = +(q.get('gshrink') || 1.0); // 遠景の最小倍率（0.0〜1.0）：遠くでどこまで小さくするか
+const G_GAMMA  = +(q.get('ggamma')  || 0.2);  // 距離減衰のカーブ（>1で遠景をさらに小さく）
+
+// 平面波
 const WAVE     = (q.get('wave') ?? '1') !== '0';
-const W_LAMBDA = +(q.get('wlambda') || 180);
-const W_SPEED  = +(q.get('wspeed')  || 1.2);
-const W_DEPTH  = +(q.get('wdepth')  || 1.0);
-const W_DIRRAD = deg2rad(+q.get('wdir') || 0);
+const W_LAMBDA = +(q.get('wlambda') || 420);
+const W_SPEED  = +(q.get('wspeed')  || 0.35);
+const W_DIR    = rad(20);
 const W_PUSH   = +(q.get('wpush')   || 0.12);
+const W_DEPTH  = +(q.get('wdepth')  || 0.8);
 
-// ---- Mouse/Touch dynamics params ----
-const MINT     = (q.get('mint') ?? '1') !== '0';
-const MMODE    = (q.get('mmode') || 'hybrid'); // 'scoop'|'attract'|'repel'|'swirl'|'hybrid'
-const MR       = +(q.get('mr')    || 360);
-const MSTR     = +(q.get('ms')    || -0.5);
-const MSWL     = +(q.get('msw')   || 0.8);
-const MBOOST   = +(q.get('mboost')|| 0.6);
-const MPULSE   = +(q.get('mpulse')|| 1.2);
+// 波紋（軽量設定）
+const RIPPLE   = (q.get('ripple') ?? '1') !== '0';
+const R_MODE   = (q.get('rmode')  || 'both');
+const R_MAX    = +(q.get('rmax')   || 40);
+const R_EMIT   = +(q.get('remit')  || 0.4);
+const R_SPEED  = +(q.get('rspeed') || 20.0);
+const R_THICK  = +(q.get('rthick') || 28);
+const R_SEGS   = +(q.get('rsegs')  || 192);
+const R_JIT    = +(q.get('rjit')   || 2.0);
+const R_ALPHA  = +(q.get('ralpha') || 1.0);
+const HUB_RATE = +(q.get('hubrate')|| 0.55);
 
-// ---- Edge runners（★輪郭を粒でなぞる）----
-const ERUN      = (q.get('erun')   ?? '1') !== '0';
-const E_RING    = +(q.get('ering')   || 2.0);
-const ER_STEP   = +(q.get('erstep')  || 12.0);
-const ER_SPEED  = +(q.get('erspeed') || 0.675);
-const ER_JIT    = +(q.get('erjit')   || 0.9);
-const ER_SIZE   = +(q.get('ersize')  || 1.7);
-const ER_ALPHA  = +(q.get('eralpha') || 0.85);
-const ER_TWINK  = +(q.get('ertwink') || 0.35);
+// 自動発生する波紋だけ遅く/濃さ別に（クリックは従来どおり）
+const R_SPEED_AUTO  = +(q.get('rspeed_auto')  || 3.0);       // ←ゆっくり広がる
+const R_ALPHA_AUTO  = +(q.get('ralpha_auto')  || 1.2);   // 見えづらい時は 0.8〜1.2 で調整
 
-// ---------- State ----------
-let buildings = [];    // { poly:[{x,y}], holes?: [[{x,y}]], extras?: [poly] }
-let roads = [];        // { pts:[{x,y}], width:number }
-let hubs = [];
+// ポインタ力学（踏襲）
+const MINT   = (q.get('mint') ?? '1') !== '0';
+const MMODE  = (q.get('mmode') || 'hybrid');
+const MR     = +(q.get('mr')    || 360);
+const MSTR   = +(q.get('ms')    || -0.5);
+const MSWL   = +(q.get('msw')   || 0.8);
+const MBOOST = +(q.get('mboost')|| 0.6);
+const MPULSE = +(q.get('mpulse')|| 1.2);
 
-let roadTargets = [];
-let bldgFillTargets = [];
+// 都市スケール
+const WORLD_W = 1600, WORLD_H = 2200;
+const GRID_X  = 220,  GRID_Y  = 200;
+const ROAD_W_MAIN = 60, ROAD_W_GRID = 36;
 
-let roadParticles = [];
-let bldgParticles = [];    // 建物内部の“スワール粒子”（控えめ）
+// 粒子数（画面スケールで）
+let N_ROAD, N_PEOPLE, N_RUNNERS;
 
-// ★輪郭を走るランナー（外形を描く主役）
-let edgeLoopsByBuilding = []; // rectId -> [{segs:[{ax,ay,bx,by,len,tx,ty,nx,ny}], total}]
-let edgeRunners = [];        // [{rectId, loopId, segIdx, sLocal, dir, speed, seed}]
+// 固定カメラ（見下ろし）
+const cam = {
+  pos:{x:0,y:0,z:0}, yaw:rad(0), pitch:rad(30), fov:rad(90), dist:600,
+  target:{x:600,y:0,z:280}
+};
+const basis = { right:[1,0,0], up:[0,0,1], fwd:[0,1,0] };
+let focal = 1;
 
-let ripples = [];
+// データ
+let roads=[], hubs=[], buildings=[], loops=[];
+let roadParticles=[], people=[], edgeRunners=[], ripples=[];
+let groundParticles=[]; // ★地面
 
-let trailG, rippleG;
-let linkDist, binSize, cols, rows;
+// ポインタ
+let pointerSX=0, pointerSY=0;
+let pointerWX=0, pointerWY=0, prevWX=0, prevWY=0, mouseVX=0, mouseVY=0, mouseSpeed=0;
 
-// --- Unified pointer (mouse or single-touch) ---
-let pointerX = 0, pointerY = 0;           // 現在位置（マウス/指）
-let prevPointerX = 0, prevPointerY = 0;   // 前フレーム位置
-let mouseVX = 0, mouseVY = 0, mouseSpeed = 0; // 既存ロジックを流用
+// エッジ表示
+const ER_SIZE_H = +(q.get('ersizeh') || 2.8);
+const ER_SIZE_V = +(q.get('ersizev') || 2.3);
+const ER_ALPHA  = +(q.get('eralpha') || 0.95);
+const ER_RING   = +(q.get('ering')   || 6.0);
+const ER_JIT    = +(q.get('erjit')   || 1.0);
+const ER_SPEEDS = { vert:0.85, flat:1.05 };
 
 // ---------- Setup ----------
 function setup(){
   const cnv = createCanvas(window.innerWidth, window.innerHeight);
-  // スクロール/ズーム抑止（モバイル）
-  if (cnv && cnv.canvas) {
-    cnv.canvas.style.touchAction = 'none';        // Android/Chrome, iOS/Safari
-    cnv.canvas.oncontextmenu = e => e.preventDefault(); // 長押しメニュー抑止
-  }
-
-  const pd = (window.devicePixelRatio > 1 ? 1.5 : 1);
-  pixelDensity(pd);
-  colorMode(HSL,360,100,100,1);
+  if (cnv && cnv.canvas){ cnv.canvas.style.touchAction='none'; cnv.canvas.oncontextmenu=e=>e.preventDefault(); }
+  pixelDensity(PD);
+  colorMode(HSL, 360,100,100,1);
   noStroke();
+  focal = (height*0.5)/Math.tan(cam.fov*0.5);
 
-  trailG  = createGraphics(width, height); trailG.pixelDensity(pd);
-  trailG.colorMode(HSL,360,100,100,1); trailG.noStroke();
-  rippleG = createGraphics(width, height); rippleG.pixelDensity(pd);
-  rippleG.colorMode(HSL,360,100,100,1); rippleG.noStroke(); rippleG.clear();
-
-  const L = Math.sqrt(width*height);
-  linkDist = constrain(L*0.07, 90, 160);
-  binSize  = linkDist; cols = ceil(width/binSize); rows = ceil(height/binSize);
-
-  // 初期ポインタ
-  pointerX = prevPointerX = width*0.5;
-  pointerY = prevPointerY = height*0.5;
+  const scaleA = Math.sqrt((width*height)/(1280*720));
+  N_ROAD    = floor(1300 * scaleA * DEN_ROAD);
+  N_PEOPLE  = floor( 500 * scaleA * DEN_PEOPLE);
+  N_RUNNERS = floor(1800 * scaleA * DEN_EDGE);
 
   designCity();
-  bakeTargets();
+  bakeLoops();
   seedParticles();
+  seedGroundParticles(); // ★
 
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) noLoop(); else loop(); });
 }
-function windowResized(){ setup(); }
-
-// ---------- Fields ----------
-function flowVec(x, y, t, s=0.0015){ const a = noise(x*s, y*s, t)*TAU*2.0; return createVector(cos(a), sin(a)); }
-function planeWave(x, y, tf){
-  if(!WAVE) return 0;
-  const dirx=cos(W_DIRRAD), diry=sin(W_DIRRAD);
-  const s=x*dirx+y*diry; const k=TAU/max(1,W_LAMBDA); const w=TAU*(W_SPEED/max(1,W_LAMBDA));
-  return cos(k*s - w*tf); // -1..1
+function windowResized(){
+  resizeCanvas(window.innerWidth, window.innerHeight);
+  pixelDensity(PD);
+  focal = (height*0.5)/Math.tan(cam.fov*0.5);
 }
-function gauss(x, sigma){ const s = sigma||1; return Math.exp(-(x*x)/(2*s*s)); }
 
-// ---------- Mouse/Touch unified force ----------
-function mouseForce(px, py, scale=1.0){
-  if (!MINT) return null;
-  const dx = px - pointerX, dy = py - pointerY;
-  const r2 = MR * MR, d2 = dx*dx + dy*dy; if (d2 > r2) return null;
-  const d = Math.sqrt(d2)+1e-6;
-  const g = Math.exp(-(d*d) / (2 * (MR*0.6) * (MR*0.6)));
-  let fx = 0, fy = 0;
-  if (MMODE==='scoop' || MMODE==='hybrid'){ const sp = (mouseSpeed/20); fx += mouseVX*0.12*MSTR*g*sp; fy += mouseVY*0.12*MSTR*g*sp; }
-  if (MMODE==='attract'||MMODE==='hybrid'){ fx += (-dx/d)*0.8*MSTR*g; fy += (-dy/d)*0.8*MSTR*g; }
-  if (MMODE==='repel'){ fx += ( dx/d)*0.8*MSTR*g; fy += ( dy/d)*0.8*MSTR*g; }
-  if (MMODE==='swirl' || MMODE==='hybrid'){ const tx = -dy/d, ty = dx/d; const s = MSWL*MSTR*g*(0.2+mouseSpeed/20); fx += tx*s; fy += ty*s; }
-  return {x:fx*scale, y:fy*scale};
+// ---------- City ----------
+function designCity(){
+  roads=[]; hubs=[]; buildings=[]; loops=[];
+  roads.push({ pts: [{x:-WORLD_W*0.6,y:-WORLD_H*0.1},{x:WORLD_W*0.6,y:WORLD_H*0.9}], width: ROAD_W_MAIN });
+  roads.push({ pts: [{x: WORLD_W*0.15,y:-WORLD_H*0.9},{x:WORLD_W*0.10,y:WORLD_H*0.9}], width: ROAD_W_MAIN });
+  for (let x=-WORLD_W/2; x<=WORLD_W/2; x+=GRID_X){
+    roads.push({ pts:[{x, y:-WORLD_H/2-400},{x, y:WORLD_H/2+400}], width: ROAD_W_GRID });
+  }
+  for (let y=-WORLD_H/2; y<=WORLD_H/2; y+=GRID_Y){
+    roads.push({ pts:[{x:-WORLD_W/2-400, y},{x:WORLD_W/2+400, y}], width: ROAD_W_GRID });
+  }
+  for (let x=-WORLD_W/2; x<=WORLD_W/2; x+=GRID_X){
+    for (let y=-WORLD_H/2; y<=WORLD_H/2; y+=GRID_Y){
+      if (random() < HUB_RATE) hubs.push({x: x+random(-20,20), y: y+random(-20,20)});
+    }
+  }
+  for (let gx=-WORLD_W/2; gx<WORLD_W/2; gx+=GRID_X){
+    for (let gy=-WORLD_H/2; gy<WORLD_H/2; gy+=GRID_Y){
+      if (random() < 0.92){
+        const cx = gx + GRID_X*0.5 + random(-GRID_X*0.15, GRID_X*0.15);
+        const cy = gy + GRID_Y*0.5 + random(-GRID_Y*0.15, GRID_Y*0.15);
+        const w  = GRID_X*random(0.45,0.95);
+        const h  = GRID_Y*random(0.45,0.95);
+        const ch = min(w,h)*0.1;
+        const poly = chamferRect(cx-w/2, cy-h/2, w, h, ch);
+        const height = random(120, 520) * (random()<0.18 ? random(1.0,2.0) : 1.0);
+        buildings.push({ poly, h: height });
+      }
+    }
+  }
+}
+
+// 輪郭エッジ（外周/屋上/垂直）
+function bakeLoops(){
+  loops=[];
+  for (const b of buildings){
+    const p=b.poly; if (!p || p.length<3) continue;
+    for (let i=0;i<p.length;i++){
+      const a=p[i], c=p[(i+1)%p.length];
+      addEdge(loops, a.x,a.y,0,   c.x,c.y,0,   p);
+      addEdge(loops, a.x,a.y,b.h, c.x,c.y,b.h, p);
+      addEdge(loops, a.x,a.y,0,   a.x,a.y,b.h, p, true);
+    }
+  }
+}
+function addEdge(arr, ax,ay,az, bx,by,bz, poly, vertical=false){
+  const vx=bx-ax, vy=by-ay, vz=bz-az;
+  const len=Math.hypot(vx,vy,vz); if (len<1e-6) return;
+  let nx=vy, ny=-vx;
+  const mx=(ax+bx)/2, my=(ay+by)/2;
+  const inside = pointInPolygon(mx + nx*0.01, my + ny*0.01, poly);
+  if (inside){ nx=-nx; ny=-ny; }
+  const nl=Math.hypot(nx,ny); if (nl>1e-9){ nx/=nl; ny/=nl; }
+  arr.push({ ax,ay,az, bx,by,bz, len, nx,ny, vertical });
+}
+
+// ---------- Seed ----------
+function seedParticles(){
+  roadParticles=[]; people=[]; edgeRunners=[]; ripples=[];
+  const roadTargets = bakeRoadTargets(8);
+
+  for (let i=0; i<N_ROAD; i++){
+    const t = roadTargets[floor(random(roadTargets.length))];
+    roadParticles.push({
+      x: t.x + random(-6,6), y: t.y + random(-6,6), z: 0,
+      tx: t.tx, ty: t.ty, speed: random(0.8,1.6), seed: random(1000), maxDrift: random(18,28)
+    });
+  }
+  for (let i=0; i<N_PEOPLE; i++){
+    const t = roadTargets[floor(random(roadTargets.length))];
+    people.push({
+      x: t.x + random(-8,8), y: t.y + random(-8,8), z: 0,
+      tx: t.tx, ty: t.ty, speed: random(0.25,0.55), jitter: random(1000), maxDrift: random(14,22)
+    });
+  }
+
+  // エッジランナー
+  let sum=0; for (const e of loops) sum += e.len;
+  const targetCount = N_RUNNERS;
+  for (const e of loops){
+    const quota = max(1, floor(targetCount * (e.len/sum)));
+    for (let k=0;k<quota;k++){
+      const s=random(e.len);
+      edgeRunners.push({
+        edge:e, s, dir: random([1,-1]),
+        speed: (e.vertical? ER_SPEEDS.vert : ER_SPEEDS.flat) * random(0.85,1.25),
+        seed: random(10000)
+      });
+    }
+  }
+}
+function bakeRoadTargets(step=8){
+  const targets=[];
+  for (const r of roads){
+    for (let i=0;i<r.pts.length-1;i++){
+      const a=r.pts[i], b=r.pts[i+1];
+      const vx=b.x-a.x, vy=b.y-a.y; const L=Math.hypot(vx,vy); if (L<step) continue;
+      const tx=vx/L, ty=vy/L, nx=-ty, ny=tx;
+      const lanes = max(1, floor((r.width*0.5)/6));
+      const N=floor(L/step);
+      for (let s=0;s<=N;s++){
+        const t=s/N, x=a.x+vx*t, y=a.y+vy*t;
+        for (let k=-lanes;k<=lanes;k++){
+          const off=(k/lanes)*r.width*0.45;
+          targets.push({ x:x+nx*off, y:y+ny*off, tx,ty });
+        }
+      }
+    }
+  }
+  return targets;
+}
+
+// ★地面粒子（z=0／建物の床は抜き）
+function seedGroundParticles(){
+  groundParticles = [];
+  const step = Math.max(G_MIN, Math.floor(G_STEP / Math.sqrt(Math.max(0.1, DEN_GROUND))));
+  for (let x=-WORLD_W/2; x<=WORLD_W/2; x+=step){
+    for (let y=-WORLD_H/2; y<=WORLD_H/2; y+=step){
+      const gx = x + random(-step*0.45, step*0.45);
+      const gy = y + random(-step*0.45, step*0.45);
+      let inside = false;
+      for (const b of buildings){ if (pointInPolygon(gx, gy, b.poly)){ inside = true; break; } }
+      if (inside) continue;
+      groundParticles.push({ x: gx, y: gy, seed: random(10000) });
+    }
+  }
 }
 
 // ---------- Draw ----------
 function draw(){
-  const tNow = frameCount * 0.003;
+  updateCameraBasis();
 
-  // 1) 現在のポインタ（マウス or 指1本）を取得
-  if (touches && touches.length > 0){
-    pointerX = touches[0].x;
-    pointerY = touches[0].y;
-  } else {
-    pointerX = mouseX;
-    pointerY = mouseY;
+  // ポインタ（スクリーン→地表）
+  if (touches && touches.length>0){ pointerSX=touches[0].x; pointerSY=touches[0].y; }
+  else { pointerSX=mouseX; pointerSY=mouseY; }
+  const g = screenToGround(pointerSX, pointerSY);
+  if (g){
+    const dx=g.x-prevWX, dy=g.y-prevWY;
+    mouseVX=lerp(mouseVX,dx,0.4); mouseVY=lerp(mouseVY,dy,0.4);
+    mouseSpeed=Math.hypot(mouseVX,mouseVY);
+    pointerWX=g.x; pointerWY=g.y; prevWX=g.x; prevWY=g.y;
   }
 
-  // 2) ポインタ速度（なめらかに）
-  const mdx = pointerX - prevPointerX;
-  const mdy = pointerY - prevPointerY;
-  mouseVX = lerp(mouseVX, mdx, 0.4);
-  mouseVY = lerp(mouseVY, mdy, 0.4);
-  mouseSpeed = Math.hypot(mouseVX, mouseVY);
+  background(0,0,100,1); // 白
 
-  trailG.clear();
+  // 地面：最初に淡く敷く
+  drawGround();
 
-  // ★輪郭ランナー（外形の可視化の主役）
-  if (ERUN) drawEdgeRunners(trailG, tNow);
+  // エッジランナー
+  for (const p of edgeRunners){
+    const e=p.edge;
+    let t=(p.s/e.len)%1; if (t<0) t+=1;
+    let x=lerp(e.ax,e.bx,t), y=lerp(e.ay,e.by,t), z=lerp(e.az,e.bz,t);
 
-  // 道路 & 建物内部の動的粒子
-  drawRoadParticles(trailG, tNow);
-  drawBuildingInterior(trailG, tNow);
+    const ring = (e.vertical? 3.0 : ER_RING);
+    const jit  = (e.vertical? 0.8 : ER_JIT);
+    x += e.nx * (ring + jit * sin(frameCount*0.027 + p.seed));
+    y += e.ny * (ring + jit * cos(frameCount*0.025 + p.seed));
+    if(!e.vertical) z += 0.6*sin(frameCount*0.015+p.seed);
+
+    const pr=project(x,y,z); if(!pr.visible) continue;
+
+    const F = planeWave(x,y,frameCount);
+    const tw = 1.0 + 0.35*F;
+    const baseSize = (e.vertical? ER_SIZE_V : ER_SIZE_H);
+    const size = baseSize * tw * pr.scale;
+    const alpha= ER_ALPHA * tw * pr.fade;
+
+    fill(HUE, SAT*0.9, Math.min(95, depthLightness(z,y)+12), alpha*0.16);
+    circle(pr.x, pr.y, size*1.9);
+
+    fill(HUE, SAT, depthLightness(z,y), alpha);
+    circle(pr.x, pr.y, size);
+
+    const flowNoise = 0.6 + 0.4*sin(frameCount*0.02+p.seed);
+    p.s += p.dir * p.speed * flowNoise;
+    if (p.s<0) p.s+=e.len; if (p.s>e.len) p.s-=e.len;
+  }
+
+  // 道路
+  for (const p of roadParticles){
+    if (WAVE && W_PUSH){ const d=[Math.cos(W_DIR), Math.sin(W_DIR)]; p.x+=d[0]*W_PUSH; p.y+=d[1]*W_PUSH; }
+    const mf = mouseForce(p.x, p.y, 1.0); if (mf){ p.x+=mf.x; p.y+=mf.y; }
+    const gust = 1.0 + 0.9*mouseBoostAt(p.x,p.y);
+    p.x += p.tx * 1.6 * p.speed * gust;
+    p.y += p.ty * 1.6 * p.speed * gust;
+    p.x += (noise(p.seed, frameCount*0.01)-0.5)*0.4;
+    p.y += (noise(p.seed+99, frameCount*0.01)-0.5)*0.4;
+
+    if (abs(p.x)>WORLD_W || abs(p.y)>WORLD_H){ const r=random(roads), a=r.pts[0], b=r.pts[1]||r.pts[0]; p.x=a.x; p.y=a.y; }
+    const pr=project(p.x,p.y,0); if(!pr.visible) continue;
+    fill(HUE, 80, 50, 0.60*pr.fade);
+    circle(pr.x, pr.y, 1.5*pr.scale);
+  }
+
+  // 人
+  for (const p of people){
+    const hop = 1.0 + 0.1*sin(frameCount*0.12 + p.jitter);
+    const mf = mouseForce(p.x, p.y, 0.55); if (mf){ p.x+=mf.x; p.y+=mf.y; }
+    p.x += p.tx * 0.65 * p.speed * hop;
+    p.y += p.ty * 0.65 * p.speed * hop;
+    if (random()<0.01){
+      const r=random(roads), i=floor(random(r.pts.length-1));
+      const a=r.pts[i], b=r.pts[i+1]; const vx=b.x-a.x, vy=b.y-a.y, L=Math.hypot(vx,vy);
+      p.tx=vx/L; p.ty=vy/L;
+    }
+    const pr=project(p.x,p.y,0); if(!pr.visible) continue;
+    fill(HUE, 68, 45, 0.68*pr.fade);
+    circle(pr.x, pr.y, 1.1*pr.scale);
+  }
 
   // 波紋
-  if (RIPPLE) drawRipplesOn(rippleG);
-
-  // compose（白背景）
-  background(0, 0, 100, 1);
-  image(trailG, 0, 0, width, height);
-  if (RIPPLE) image(rippleG, 0, 0, width, height);
-
-  // 3) 前フレームとして保存
-  prevPointerX = pointerX;
-  prevPointerY = pointerY;
+  if (RIPPLE && random()<R_EMIT && hubs.length){ const h=random(hubs); rippleAutoAt(h.x,h.y); }
+  if (RIPPLE) drawRipples();
 }
 
-// ---------- Edge runners（輪郭を走る粒） ----------
-function drawEdgeRunners(g, tNow){
-  for (const p of edgeRunners){
-    const loop = edgeLoopsByBuilding[p.rectId][p.loopId];
-    let seg = loop.segs[p.segIdx];
+// --- 地面 ---
+function drawGround(){
+  for (const gp of groundParticles){
+    const pr = project(gp.x, gp.y, 0);
+    if (!pr.visible) continue;
 
-    let t = (seg.len > 1e-6) ? (p.sLocal / seg.len) : 0.0;
-    t = constrain(t, 0, 1);
-    let cx = seg.ax + (seg.bx - seg.ax) * t;
-    let cy = seg.ay + (seg.by - seg.ay) * t;
+    // 白地に負けないような明度とアルファ（既存ロジック）
+    const depth = pr.fade;                         // 近い:1 ←→ 遠い:~0.35
+    const L     = 70 + (1.0 - depth) * 14;        // 70〜84（遠景はちょい明るく）
+    const a     = G_ALPHA * (0.9*depth + 0.1);    // 遠景ほど薄く
+    const wob   = 1 + 0.12 * sin(frameCount*0.02 + gp.seed);
 
-    const offN = E_RING + ER_JIT * sin(frameCount*0.03 + p.seed);
-    cx += seg.nx * offN; cy += seg.ny * offN;
+    // === サイズ計算（小さく＋距離減衰）========================
+    // 基本サイズ（小さめ既定）＋わずかな揺らぎ
+    let r = (G_SIZE + G_JIT * wob) * pr.scale;
 
-    const offT = 0.45 * sin(frameCount*0.027 + p.seed*1.7);
-    cx += seg.tx * offT; cy += seg.ty * offT;
+    // 距離による縮小（深度=pr.fade を 0.35〜1.0 → 0〜1 に正規化して使う方法もあるが、
+    // ここでは fade そのものを使う）
+    // 1) ガンマカーブで遠景をさらに抑える（ggamma>1で遠景小さく）
+    const gammaScale = Math.pow(depth, Math.max(0.01, G_GAMMA)); // 安定のため下限
+    // 2) 線形補間で「遠いほどG_SHRINKに近づく」
+    const shrinkScale = lerp(G_SHRINK, 1.0, depth);              // depth=0.35→~G_SHRINK, depth=1→1.0
 
-    const F = planeWave(cx, cy, frameCount);
-    const gMouse = gauss(dist(cx,cy,pointerX,pointerY), 140);
-    const tw = 1.0 + ER_TWINK * (0.6*F + 0.4*gMouse);
-    const size = ER_SIZE * tw;
-    const alpha = ER_ALPHA * tw;
+    r *= gammaScale * shrinkScale;
 
-    g.fill(HUE, 75, 58, alpha);
-    g.circle(cx, cy, size);
+    // あまりに小さくなりすぎるのを防ぐ最小サイズ（任意）
+    r = Math.max(0.25, r);
 
-    const fv = flowVec(cx, cy, tNow).mult(0.6*FLOW_NOISE);
-    const dotT = fv.x*seg.tx + fv.y*seg.ty;
-    const base = p.speed * (1 + 0.22*sin(frameCount*0.02 + p.seed));
-    const mBoost = (1 + 0.75*MBOOST*(mouseSpeed/18)*gMouse);
-    let ds = p.dir * (base*mBoost + dotT*1.0);
-
-    p.sLocal += ds;
-    while (p.sLocal >= seg.len){ p.sLocal -= seg.len; p.segIdx = (p.segIdx + 1) % loop.segs.length; seg = loop.segs[p.segIdx]; }
-    while (p.sLocal < 0){ p.segIdx = (p.segIdx - 1 + loop.segs.length) % loop.segs.length; seg = loop.segs[p.segIdx]; p.sLocal += seg.len; }
+    // ===========================================================
+    fill(G_HUE, G_SAT, L, a);
+    circle(pr.x, pr.y, r);
   }
 }
 
-// ---------- Road particles ----------
-function drawRoadParticles(g, tNow){
-  const dirx=cos(W_DIRRAD), diry=sin(W_DIRRAD);
-  for (const p of roadParticles){
-    const t=p.target, breath=0.85+0.15*sin(frameCount*0.02+p.seed);
-    const to=createVector(t.x-p.x,t.y-p.y).mult(0.03*breath);
-    const tan=createVector(t.tx,t.ty).mult(0.22*FLOW*breath);
-    const fv=flowVec(p.x,p.y,tNow).mult(0.6*FLOW_NOISE*TURB);
+// --- インタラクション ---
+function mousePressed(){ pointerPulseAt(pointerWX, pointerWY); return false; }
+function touchStarted(){
+  if (touches && touches.length>0){
+    const g = screenToGround(touches[0].x, touches[0].y);
+    if (g) pointerPulseAt(g.x, g.y);
+  }
+  return false;
+}
+function touchMoved(){ if (touches && touches.length>0){ pointerSX=touches[0].x; pointerSY=touches[0].y; } return false; }
+function mouseWheel(e){ return false; }
 
-    const F=planeWave(p.x,p.y,frameCount);
-    if (WAVE && W_PUSH){ p.v.x += dirx*W_PUSH*F; p.v.y += diry*W_PUSH*F; }
-
-    const dmx=p.x-pointerX, dmy=p.y-pointerY, dm2=dmx*dmx+dmy*dmy;
-    if (dm2 < 140*140){ const amp = (1 - sqrt(dm2)/140); tan.mult(1 + GUST * amp * (0.5 + 0.5 * min(1, mouseSpeed/10))); }
-
-    const mf = mouseForce(p.x, p.y, 1.0); if (mf){ p.v.x += mf.x; p.v.y += mf.y; }
-
-    p.v.add(to).add(tan).add(fv);
-    p.v.mult(0.92);
-    p.v.x += (noise(p.seed,        frameCount*0.01)-0.5)*0.25;
-    p.v.y += (noise(p.seed + 1000, frameCount*0.01)-0.5)*0.25;
-
-    const vmax = 3.2*breath*(1 + MBOOST*(mouseSpeed/18));
-    if (p.v.mag() > vmax) p.v.setMag(vmax);
-
-    p.x += p.v.x; p.y += p.v.y;
-
-    if (random() < RETARGET){
-      const nt = random(roadTargets);
-      p.target = nt; p.x = nt.x + random(-3,3); p.y = nt.y + random(-3,3);
-    }
-    if (dist(p.x,p.y,t.x,t.y) > p.maxDrift){
-      const nt = random(roadTargets);
-      p.target = nt; p.x = nt.x + random(-3,3); p.y = nt.y + random(-3,3);
-      p.v.mult(0.5);
-    }
-
-    const baseA=0.42+0.14*breath, baseS=1.6+0.6*breath, w01=(F+1)*0.5;
-    g.fill(HUE, 80, 50, baseA*(1.0+W_DEPTH*0.6*(w01-0.5)));
-    g.circle(p.x, p.y, baseS*(1.0+W_DEPTH*0.35*(w01-0.5)));
+// --- 力学 ---
+function mouseForce(px, py, scale=1.0){
+  if (!MINT) return null;
+  const dx=px-pointerWX, dy=py-pointerWY;
+  const r2=MR*MR, d2=dx*dx+dy*dy; if (d2>r2) return null;
+  const d=Math.sqrt(d2)+1e-6, g=Math.exp(-(d*d)/(2*(MR*0.6)*(MR*0.6)));
+  let fx=0, fy=0;
+  if (MMODE==='scoop'||MMODE==='hybrid'){ const sp=(mouseSpeed/20); fx+=mouseVX*0.12*MSTR*g*sp; fy+=mouseVY*0.12*MSTR*g*sp; }
+  if (MMODE==='attract'||MMODE==='hybrid'){ fx+=(-dx/d)*0.8*MSTR*g; fy+=(-dy/d)*0.8*MSTR*g; }
+  if (MMODE==='repel'){ fx+=(dx/d)*0.8*MSTR*g; fy+=(dy/d)*0.8*MSTR*g; }
+  if (MMODE==='swirl'||MMODE==='hybrid'){ const tx=-dy/d, ty=dx/d; const s=MSWL*MSTR*g*(0.2+mouseSpeed/20); fx+=tx*s; fy+=ty*s; }
+  return {x:fx*scale, y:fy*scale};
+}
+function pointerPulseAt(x, y){
+  if (RIPPLE) rippleAt(x, y);
+  const R=MR*0.9, R2=R*R, kick=1.0*MPULSE;
+  for (let i=0;i<roadParticles.length;i+=2){
+    const p=roadParticles[i]; const dx=p.x-x, dy=p.y-y; const d2=dx*dx+dy*dy;
+    if (d2<R2){ const d=Math.sqrt(d2)||1; p.x+=(dx/d)*kick; p.y+=(dy/d)*kick; }
+  }
+  for (let i=0;i<people.length;i+=3){
+    const p=people[i]; const dx=p.x-x, dy=p.y-y; const d2=dx*dx+dy*dy;
+    if (d2<R2){ const d=Math.sqrt(d2)||1; p.x+=(dx/d)*kick*0.7; p.y+=(dy/d)*kick*0.7; }
   }
 }
 
-// ---------- Building interior particles（控えめ） ----------
-function drawBuildingInterior(g, tNow){
-  const dirx=cos(W_DIRRAD), diry=sin(W_DIRRAD);
-  for (const p of bldgParticles){
-    const t = p.target;
-    const breath = 0.9 + 0.1 * sin(frameCount*0.018 + p.seed);
-
-    const to  = createVector(t.x - p.x, t.y - p.y).mult(0.035 * breath);
-    const ang = noise(p.seed, frameCount*0.012) * TAU*2;
-    const orb = createVector(cos(ang), sin(ang)).mult(0.18 * breath);
-    const fv  = flowVec(p.x, p.y, tNow).mult(0.30 * FLOW_NOISE);
-
-    const F = planeWave(p.x, p.y, frameCount);
-    if (WAVE && W_PUSH){ p.v.x += dirx * W_PUSH * 0.4 * F; p.v.y += diry * W_PUSH * 0.4 * F; }
-
-    const dx = p.x - pointerX, dy = p.y - pointerY;
-    const d2 = dx*dx + dy*dy;
-    if (d2 < 120*120){
-      const d = sqrt(d2)+0.001;
-      const k = (0.25 * (1 - d/120));
-      to.x += -dx/d * k * 0.15; to.y += -dy/d * k * 0.15;
-    }
-
-    const mf = mouseForce(p.x, p.y, 0.55); if (mf){ p.v.x += mf.x; p.v.y += mf.y; }
-
-    p.v.add(to).add(orb).add(fv);
-    p.v.mult(0.9);
-    p.v.x += (noise(p.seed,        frameCount*0.013)-0.5)*0.16;
-    p.v.y += (noise(p.seed + 2000, frameCount*0.013)-0.5)*0.16;
-
-    const vmax = 2.4 * breath * (1 + 0.7 * MBOOST * (mouseSpeed / 18));
-    if (p.v.mag() > vmax) p.v.setMag(vmax);
-
-    p.x += p.v.x; p.y += p.v.y;
-
-    if (random() < RETARGET*0.5){
-      const nt = random(bldgFillTargets);
-      if (nt){ p.target = nt; p.x = nt.x + random(-2,2); p.y = nt.y + random(-2,2); }
-    }
-    if (dist(p.x,p.y,t.x,t.y) > p.maxDrift){
-      p.x = t.x + random(-2,2); p.y = t.y + random(-2,2); p.v.mult(0);
-    }
-
-    const baseAlpha = 0.45 + 0.06 * breath;
-    const baseSize  = 1.2 + 0.35 * breath;
-    const w01 = (F + 1) * 0.5;
-    const alpha = baseAlpha * (1.0 + W_DEPTH * 0.28 * (w01 - 0.5));
-    const size  = baseSize  * (1.0 + W_DEPTH * 0.22 * (w01 - 0.5));
-
-    g.fill(HUE, 68, 45, alpha);
-    g.circle(p.x, p.y, size);
-  }
-}
-
-// ---------- Ripple Overlay ----------
-function emitRipple(){
-  if (!hubs.length) return;
-  const h = random(hubs);
-  ripples.push({ x: h.x, y: h.y, r: 10, life: 0, alpha: R_ALPHA, seed: random(1000) });
-  if (ripples.length > R_MAX) ripples.shift();
-}
+// --- Ripple ---
 function rippleAt(x,y){
-  ripples.push({ x, y, r: 10, life: 0, alpha: R_ALPHA*1.2, seed: random(1000) });
+  ripples.push({ x,y, r:10, life:0, alpha:R_ALPHA, seed:random(1000), speed:R_SPEED });
   if (ripples.length > R_MAX) ripples.shift();
 }
-function drawRipplesOn(g){
-  if (random() < R_EMIT) emitRipple();
-  g.clear();
-  g.push();
-  g.blendMode(BLEND);
-  for (let i = ripples.length - 1; i >= 0; i--){
-    const w = ripples[i];
+function rippleAutoAt(x, y){
+  ripples.push({ x, y, r: 10, life: 0, alpha: R_ALPHA_AUTO, seed: random(1000), speed: R_SPEED_AUTO });
+  if (ripples.length > R_MAX) ripples.shift();
+}
+function drawRipples(){
+  for (let i=ripples.length-1; i>=0; i--){
+    const w=ripples[i];
     w.life += 1;
     const jitterGrow = 1 + 0.06 * sin(frameCount*0.07 + w.seed);
-    w.r += R_SPEED * jitterGrow;
-    const alpha = w.alpha * Math.exp(-w.life*0.015);
-
-    if (R_MODE === 'dot' || R_MODE === 'both'){
-      g.noStroke();
-      for (let j=0; j<R_SEGS; j++){
-        const a = (j / R_SEGS) * TAU;
+    w.r += w.speed * jitterGrow;
+    const alpha = w.alpha * Math.exp(-w.life*0.016);
+    if (R_MODE==='dot' || R_MODE==='both'){
+      for (let j=0;j<R_SEGS;j++){
+        const a=(j/R_SEGS)*TAU;
         const jit = R_JIT * (noise(w.seed + j*0.013, frameCount*0.01) - 0.5);
-        const rr = max(1, w.r + jit);
-        const x = w.x + cos(a) * rr;
-        const y = w.y + sin(a) * rr;
-        const sz = 1.3 + 0.7 * sin(a*2 + w.life*0.05);
-        g.fill(HUE, 90, 70, alpha*0.8);
-        g.circle(x, y, sz);
+        const rr = Math.max(1, w.r + jit);
+        const x = w.x + Math.cos(a)*rr;
+        const y = w.y + Math.sin(a)*rr;
+        const pr = project(x,y,0); if(!pr.visible) continue;
+        const sz = 1.2 + 0.6 * Math.sin(a*2 + w.life*0.05);
+        fill(HUE, 90, 70, alpha*0.8*pr.fade);
+        circle(pr.x, pr.y, sz*pr.scale);
       }
     }
-    if (R_MODE === 'grad' || R_MODE === 'both'){
-      g.noFill();
-      const steps = 10;
-      for (let k=0; k<steps; k++){
+    if (R_MODE==='grad' || R_MODE==='both'){
+      const steps = 8;
+      for (let k=0;k<steps;k++){
         const t = k/(steps-1);
-        const rr = w.r - R_THICK/2 + t*R_THICK;
-        if (rr <= 0) continue;
-        const fade = 1 - abs((t*2)-1);
-        const a2 = alpha * (0.65 * pow(fade, 0.9));
-        g.stroke(HUE, 80, 65, a2);
-        g.strokeWeight(1);
-        g.circle(w.x, w.y, rr*2);
-      }
-    }
-
-    if (alpha < 0.02 || w.r > max(width, height)*1.2){
-      ripples.splice(i, 1);
-    }
-  }
-  g.pop();
-}
-
-// ---------- City Layout（あなたの designCity をそのまま使用） ----------
-function designCity(){
-  buildings = [];
-  roads = [];
-  hubs = [];
-
-  const W = width, H = height;
-  const gx = max(110, floor(W/10));
-  const gy = max(110, floor(H/7));
-
-  // 主要道路
-  roads.push({ pts: [{x:-50,y:H*0.65},{x:W+50,y:H*0.62}], width: 26 });
-  roads.push({ pts: [{x:W*0.55,y:-50},{x:W*0.52,y:H+50}], width: 24 });
-  roads.push({ pts: [{x:-60,y:H*0.25},{x:W*0.75,y:H*0.55},{x:W+60,y:H*0.75}], width: 20 });
-  // 二次道路グリッド
-  for(let x=gx; x<W; x+=gx) roads.push({pts:[{x:x,y:-50},{x:x,y:H+50}], width: 10});
-  for(let y=gy; y<H; y+=gy) roads.push({pts:[{x:-50,y:y},{x:W+50,y:y}], width: 10});
-
-  // ハブ（交差点）
-  for (let x=gx; x<W; x+=gx){
-    for (let y=gy; y<H; y+=gy){
-      if (random() < constrain(HUB_RATE, 0, 1)){
-        hubs.push({ x: x + random(-gx*0.15, gx*0.15), y: y + random(-gy*0.15, gy*0.15) });
-      }
-    }
-  }
-
-  // 大きめブロック（従来ベース）
-  const blocks = [
-    {x: W*0.08, y: H*0.10, w: W*0.18, h: H*0.20},
-    {x: W*0.28, y: H*0.12, w: W*0.14, h: H*0.25},
-    {x: W*0.46, y: H*0.08, w: W*0.18, h: H*0.18},
-    {x: W*0.07, y: H*0.42, w: W*0.22, h: H*0.20},
-    {x: W*0.34, y: H*0.44, w: W*0.18, h: H*0.22},
-    {x: W*0.60, y: H*0.42, w: W*0.28, h: H*0.22},
-    {x: W*0.18, y: H*0.74, w: W*0.22, h: H*0.18},
-    {x: W*0.46, y: H*0.72, w: W*0.18, h: H*0.20}
-  ];
-  for (const b of blocks){
-    const r = {x:b.x+6, y:b.y+6, w:b.w-12, h:b.h-12};
-    const t = random();
-    if (t < 0.33){
-      const m = min(r.w, r.h) * 0.25;
-      const outer = rectPoly(r.x, r.y, r.w, r.h);
-      const inner = rectPoly(r.x+m, r.y+m, r.w-2*m, r.h-2*m);
-      buildings.push({ poly: outer, holes: [inner] });
-    } else if (t < 0.66){
-      const cham = min(r.w, r.h)*0.10;
-      const base = chamferRect(r.x, r.y, r.w, r.h, cham);
-      const upx = r.x + r.w*0.18, upy = r.y + r.h*0.18;
-      const upw = r.w*0.64, uph = r.h*0.64;
-      const upper = chamferRect(upx, upy, upw, uph, cham*0.7);
-      buildings.push({ poly: base, holes: [], extras: [upper] });
-    } else {
-      const cx = r.x + r.w/2, cy = r.y + r.h/2;
-      const rad = min(r.w, r.h)*0.5;
-      buildings.push({ poly: regularNGon(cx, cy, rad, 8, PI/8), holes: [] });
-    }
-  }
-
-  // ★ 細分化ブロック：画面全域に小区画を量産して小建物を配置
-  const lotW = gx * 0.48, lotH = gy * 0.42;
-  const gap  = 6;
-  for (let y=gap; y<H-gap-lotH; y += lotH + gap){
-    for (let x=gap; x<W-gap-lotW; x += lotW + gap){
-      if (random() < 0.95){
-        const mx = x + random(-4,4), my = y + random(-4,4);
-        const shapePick = random();
-        const w = lotW * random(0.4, 1.1);
-        const h = lotH * random(0.4, 1.1);
-        if (shapePick < 0.35){
-          const ch = min(w,h)*0.10;
-          buildings.push({ poly: chamferRect(mx, my, w, h, ch), holes: [] });
-        } else if (shapePick < 0.6){
-          const cutW = w * random(0.35, 0.55);
-          const cutH = h * random(0.35, 0.55);
-          const poly = [
-            {x:mx, y:my}, {x:mx+w, y:my}, {x:mx+w, y:my+cutH},
-            {x:mx+cutW, y:my+cutH}, {x:mx+cutW, y:my+h}, {x:mx, y:my+h}
-          ];
-          buildings.push({ poly, holes: [] });
-        } else if (shapePick < 0.8){
-          const cx = mx + w/2, cy = my + h/2;
-          const rad = min(w,h)*0.45;
-          buildings.push({ poly: regularNGon(cx, cy, rad, 8, PI/8), holes: [] });
-        } else {
-          const rot = random([-PI/2, 0, PI/2, PI/4]);
-          const house = houseGable(mx, my, w*0.9, h*0.8, rot);
-          buildings.push(house);
+        const rr = w.r - R_THICK/2 + t*R_THICK; if (rr<=0) continue;
+        const fade = 1 - Math.abs((t*2)-1);
+        const a2 = alpha * (0.65 * Math.pow(fade, 0.9));
+        for (let j=0;j<R_SEGS;j++){
+          const a=(j/R_SEGS)*TAU;
+          const x = w.x + Math.cos(a)*rr;
+          const y = w.y + Math.sin(a)*rr;
+          const pr = project(x,y,0); if(!pr.visible) continue;
+          fill(HUE, 80, 65, a2*0.6*pr.fade);
+          circle(pr.x, pr.y, (0.9+0.35*fade)*pr.scale);
         }
       }
     }
+    if (alpha<0.03 || w.r>Math.max(WORLD_W,WORLD_H)) ripples.splice(i,1);
   }
 }
 
-// ---------- Target Baking（内部ターゲット + ★輪郭ループ） ----------
-function bakeTargets(){
-  roadTargets = [];
-  bldgFillTargets = [];
-  edgeLoopsByBuilding = [];
-
-  // 道路ターゲット
-  for (const r of roads){
-    const segStep = 6;
-    for (let i=0;i<r.pts.length-1;i++){
-      const a=r.pts[i], b=r.pts[i+1];
-      const L = dist(a.x,a.y,b.x,b.y);
-      const N = max(2, floor(L/segStep));
-      for (let s=0; s<=N; s++){
-        const t=s/N; const x=lerp(a.x,b.x,t), y=lerp(a.y,b.y,t);
-        const tx=(b.x-a.x)/L, ty=(b.y-a.y)/L;
-        const half = r.width*0.5; const lanes = max(1, floor(half/4));
-        for(let k=-lanes;k<=lanes;k++){
-          const nx = -ty, ny = tx;
-          const off = (k/lanes) * half * 0.9;
-          roadTargets.push({x:x+nx*off, y:y+ny*off, tx:tx, ty:ty});
-        }
-      }
-    }
-  }
-  if (RDEN !== 1.0){ const keepR = constrain(RDEN, 0.4, 2.0); roadTargets = roadTargets.filter(()=> random() < keepR); }
-
-  // 建物内部ターゲット（控えめ）
-  for (let id=0; id<buildings.length; id++){
-    const b = buildings[id];
-    const bb = bbox(b.poly);
-    for (let x=bb.x; x<=bb.x+bb.w; x+=8){
-      for (let y=bb.y; y<=bb.y+bb.h; y+=8){
-        if (pointInBuilding(x,y,b) && random()<0.22){
-          bldgFillTargets.push({x, y, rectId:id});
-        }
-      }
-    }
-  }
-  if (BDEN !== 1.0){ const keepB = constrain(BDEN, 0.4, 2.0); bldgFillTargets = bldgFillTargets.filter(()=> random() < keepB); }
-
-  // ★輪郭ループ生成
-  edgeLoopsByBuilding = buildings.map(b=>{
-    const loops = [];
-    const paths = [b.poly].concat(b.extras||[]).concat(b.holes||[]);
-    for (const poly of paths){
-      if (!poly || poly.length < 2) continue;
-      const area = signedArea(poly);       // CCW: +, CW: -
-      const side = (area >= 0) ? +1 : -1;  // inside が“左”なら +1
-      const segs = [];
-      let total = 0;
-      for (let i=0;i<poly.length;i++){
-        const a = poly[i], c = poly[(i+1)%poly.length];
-        const vx = c.x - a.x, vy = c.y - a.y;
-        const len = Math.hypot(vx,vy); if (len < 1e-6) continue;
-        const tx = vx/len, ty = vy/len;
-        const nx = (ty) * side;            // 内側法線
-        const ny = (-tx) * side;
-        segs.push({ax:a.x, ay:a.y, bx:c.x, by:c.y, len, tx, ty, nx, ny});
-        total += len;
-      }
-      if (segs.length) loops.push({segs, total});
-    }
-    return loops;
-  });
+// --- Camera / Math ---
+function updateCameraBasis(){
+  const cx = cam.target.x + cam.dist * Math.cos(cam.pitch) * Math.cos(cam.yaw);
+  const cy = cam.target.y + cam.dist * Math.cos(cam.pitch) * Math.sin(cam.yaw);
+  const cz = cam.target.z + cam.dist * Math.sin(cam.pitch);
+  cam.pos.x=cx; cam.pos.y=cy; cam.pos.z=cz;
+  const fwd = normalize([cam.target.x-cam.pos.x, cam.target.y-cam.pos.y, cam.target.z-cam.pos.z]);
+  const worldUp=[0,0,1];
+  const right = normalize(cross(fwd, worldUp));
+  const up    = normalize(cross(right, fwd));
+  basis.fwd=fwd; basis.right=right; basis.up=up;
 }
-
-// ---------- Seed Particles ----------
-function seedParticles(){
-  roadParticles = [];
-  bldgParticles = [];
-  edgeRunners = [];
-
-  // Road
-  const nR = min(roadTargets.length, 2200);
-  for (let i=0;i<nR;i++){
-    const t = roadTargets[floor(random(roadTargets.length))];
-    roadParticles.push({
-      x: t.x + random(-3,3), y: t.y + random(-3,3), v: createVector(0,0),
-      target: t, maxDrift: random(18,28), seed: random(10000)
-    });
-  }
-
-  // Building interior（控えめ）
-  const nB = min(bldgFillTargets.length, 1100);
-  for (let i=0;i<nB;i++){
-    const t = bldgFillTargets[floor(random(bldgFillTargets.length))];
-    bldgParticles.push({
-      x: t.x + random(-2,2), y: t.y + random(-2,2), v: createVector(0,0),
-      target: t, rectId: t.rectId, maxDrift: random(14,22), seed: random(10000)
-    });
-  }
-
-  // ★Edge runners：全建物の輪郭長に比例して粒を配分
-  if (ERUN){
-    let sumLen = 0;
-    const loopIndex = []; // [ {rectId, loopId, len} ... ]
-    for (let rid=0; rid<edgeLoopsByBuilding.length; rid++){
-      const loops = edgeLoopsByBuilding[rid];
-      if (!loops) continue;
-      for (let li=0; li<loops.length; li++){
-        const len = loops[li].total;
-        if (len > 0){ loopIndex.push({rectId:rid, loopId:li, len}); sumLen += len; }
-      }
-    }
-    const targetCount = constrain(floor(sumLen / max(2, ER_STEP)), 300, 2400);
-    for (const L of loopIndex){
-      const loop  = edgeLoopsByBuilding[L.rectId][L.loopId];
-      const quota = max(1, floor(targetCount * (L.len / sumLen)));
-      for (let k=0; k<quota; k++){
-        const sPick = random(L.len);
-        let acc = 0, segIdx = 0, sLocal = 0;
-        for (let i=0; i<loop.segs.length; i++){
-          const len = loop.segs[i].len;
-          if (sPick <= acc + len){ segIdx = i; sLocal = sPick - acc; break; }
-          acc += len;
-        }
-        edgeRunners.push({
-          rectId: L.rectId, loopId: L.loopId,
-          segIdx, sLocal, dir: random([1,-1]),
-          speed: ER_SPEED * random(0.85, 1.25),
-          seed: random(10000)
-        });
-      }
-    }
-  }
+function project(x,y,z){
+  const vx=x-cam.pos.x, vy=y-cam.pos.y, vz=z-cam.pos.z;
+  const cx=dot([vx,vy,vz], basis.right);
+  const cy=dot([vx,vy,vz], basis.up);
+  const cz=dot([vx,vy,vz], basis.fwd);
+  if (cz<=4) return {visible:false};
+  const sx=(cx*focal)/cz, sy=(cy*focal)/cz;
+  const fade = constrain(map(cz, 200, cam.dist*2.2, 1, 0.35), 0, 1);
+  const scale=constrain(map(cz, 200, cam.dist*1.6, 1.3, 0.7), 0.5, 2.0);
+  return { visible:true, x:width*0.5+sx, y:height*0.5-sy, fade, scale };
 }
-
-// ---------- Helpers (contours debug) ----------
-function drawBuildingContoursOn(g){
-  if (!SHOW_CONTOURS) return;
-  g.stroke(HUE, 40, 50, 0.45);
-  g.strokeWeight(1);
-  const step = 4;
-  for (const b of buildings){
-    const poly = b.poly;
-    for (let i=0;i<poly.length;i++){
-      const a = poly[i], c = poly[(i+1)%poly.length];
-      const L = dist(a.x,a.y,c.x,c.y);
-      const N = max(2, floor(L/step));
-      for (let s=0;s<=N;s++){
-        const t=s/N; const x=lerp(a.x,c.x,t), y=lerp(a.y,c.y,t);
-        g.point(x,y);
-      }
-    }
-  }
-  g.noStroke();
+function screenToGround(x,y){
+  const px=(x-width*0.5), py=-(y-height*0.5);
+  const dir=normalize([
+    basis.fwd[0] + (px/focal)*basis.right[0] + (py/focal)*basis.up[0],
+    basis.fwd[1] + (px/focal)*basis.right[1] + (py/focal)*basis.up[1],
+    basis.fwd[2] + (px/focal)*basis.right[2] + (py/focal)*basis.up[2],
+  ]);
+  const t = -cam.pos.z / dir[2];
+  if (t<=0) return null;
+  return { x: cam.pos.x + dir[0]*t, y: cam.pos.y + dir[1]*t };
 }
-
-// ---------- Geometry Helpers ----------
-function rectPoly(x,y,w,h){ return [{x,y},{x:x+w,y},{x:x+w,y:y+h},{x,y:y+h}]; }
+function planeWave(x,y,t){
+  if (!WAVE) return 0;
+  const dir=[Math.cos(W_DIR), Math.sin(W_DIR)];
+  const s=x*dir[0]+y*dir[1];
+  const k=TAU/Math.max(1,W_LAMBDA);
+  const w=TAU*(W_SPEED/Math.max(1,W_LAMBDA));
+  return Math.cos(k*s - w*t);
+}
+function mouseBoostAt(x,y){ const g=220; const d=Math.hypot(pointerWX-x, pointerWY-y); return Math.exp(- (d*d) / (2*g*g)); }
+function depthLightness(z,y){
+  const tZ = constrain(map(z, 0, 600, 0, 1), 0, 1);
+  const tY = constrain(map(y, -WORLD_H*0.6, WORLD_H*0.7, 0, 1), 0, 1);
+  return constrain(LIT_BASE + (tZ*6) + (tY*4), 40, 75);
+}
 function chamferRect(x,y,w,h,ch){
   return [
     {x:x+ch,y},{x:x+w-ch,y},
@@ -629,94 +523,15 @@ function chamferRect(x,y,w,h,ch){
     {x:x,y:y+h-ch},{x:x,y:y+ch}
   ];
 }
-function regularNGon(cx,cy,r,n,rot=0){
-  const poly=[]; for(let i=0;i<n;i++){const a=rot+i*TAU/n; poly.push({x:cx+r*cos(a), y:cy+r*sin(a)});} return poly;
-}
-function houseGable(x,y,w,h,rot=0){
-  const roofH = h*0.6;
-  const ridge = {x: x+w/2, y: y};
-  const left  = {x,      y: y+roofH};
-  const right = {x:x+w,  y: y+roofH};
-  const baseL = {x,      y: y+h};
-  const baseR = {x:x+w,  y: y+h};
-  let poly = [ left, ridge, right, baseR, baseL, left ];
-  if (rot){
-    const cx = x+w/2, cy = y+h/2;
-    poly = poly.map(p=>({ x: cx + (p.x-cx)*cos(rot) - (p.y-cy)*sin(rot),
-                          y: cy + (p.x-cx)*sin(rot) + (p.y-cy)*cos(rot) }));
-  }
-  return { poly, holes: [] };
-}
-function pointInPolygon(x, y, poly){
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
-    const xi = poly[i].x, yi = poly[i].y;
-    const xj = poly[j].x, yj = poly[j].y;
-    const intersect = ((yi > y) !== (yj > y)) &&
-                      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
-    if (intersect) inside = !inside;
+function pointInPolygon(x,y,poly){
+  let inside=false;
+  for (let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+    const inter=((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/((yj-yi)||1e-9)+xi);
+    if (inter) inside=!inside;
   }
   return inside;
 }
-function bbox(poly){
-  let minX =  Infinity, minY =  Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of poly){
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
-function pointInBuilding(x,y,building){
-  if (!pointInPolygon(x,y,building.poly)) return false;
-  if (building.holes){ for (const h of building.holes){ if (pointInPolygon(x,y,h)) return false; } }
-  return true;
-}
-function signedArea(poly){
-  let a = 0;
-  for (let i=0, j=poly.length-1; i<poly.length; j=i++){
-    const p = poly[i], q = poly[j];
-    a += (q.x + p.x) * (q.y - p.y);
-  }
-  return a * 0.5; // +:CCW, -:CW
-}
-
-// ---------- Pointer pulses ----------
-function pointerPulseAt(x, y){
-  if (RIPPLE) rippleAt(x, y);
-  const R = MR * 0.9, R2 = R*R;
-  const kick = 1.0 * MPULSE;
-  for (let i=0; i<roadParticles.length; i+=2){
-    const p = roadParticles[i];
-    const dx = p.x - x, dy = p.y - y; const d2 = dx*dx + dy*dy;
-    if (d2 < R2){ const d = Math.sqrt(d2)||1; p.v.x += (dx/d) * kick; p.v.y += (dy/d) * kick; }
-  }
-  for (let i=0; i<bldgParticles.length; i+=3){
-    const p = bldgParticles[i];
-    const dx = p.x - x, dy = p.y - y; const d2 = dx*dx + dy*dy;
-    if (d2 < R2){ const d = Math.sqrt(d2)||1; p.v.x += (dx/d) * kick*0.7; p.v.y += (dy/d) * kick*0.7; }
-  }
-}
-
-// ---------- Mouse / Touch handlers ----------
-// PC（マウス）—クリックで波紋＆パルス
-function mousePressed(){
-  pointerPulseAt(pointerX, pointerY);
-  return false; // 既定動作抑止
-}
-// スマホ/タブレット（1本指）
-function touchStarted(){
-  if (touches && touches.length > 0){
-    pointerX = touches[0].x; pointerY = touches[0].y;
-    pointerPulseAt(pointerX, pointerY); // タップ＝クリック相当
-  }
-  return false; // スクロール等の既定動作を抑止（iOS/Android）
-}
-function touchMoved(){
-  if (touches && touches.length > 0){
-    pointerX = touches[0].x; pointerY = touches[0].y; // 指の位置を反映
-  }
-  return false; // 既定動作抑止
-}
-function touchEnded(){ return false; } // 既定動作抑止
+function dot(a,b){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+function cross(a,b){ return [ a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0] ]; }
+function normalize(v){ const l=Math.hypot(v[0],v[1],v[2]); return l>1e-9?[v[0]/l,v[1]/l,v[2]/l]:[0,0,0]; }
