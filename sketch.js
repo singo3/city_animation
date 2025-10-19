@@ -88,6 +88,19 @@ const G_ALPHA    = +(q.get('galpha')    || 1); // 透明度ベース
 // ★地面の色（既定はHUEを流用）
 const G_HUE = +(q.get('ghue') ?? COLOR_ACCENT.h);  // 例: 青にしたい→ ?ghue=220
 const G_SAT = +(q.get('gsat') ?? GROUND_SAT_DEFAULT);   // 地面の彩度（控えめが綺麗）例: ?gsat=35
+const GROUND_COLOR_VARIANTS = [
+  {
+    h: COLOR_PRIMARY.h,
+    s: Math.min(100, +(COLOR_PRIMARY.s * 0.92).toFixed(2)),
+    l: Math.min(100, +(COLOR_PRIMARY.l + 4).toFixed(2))
+  },
+  {
+    h: COLOR_ACCENT.h,
+    s: Math.min(100, +(COLOR_ACCENT.s * 0.98).toFixed(2)),
+    l: Math.min(100, +(COLOR_ACCENT.l + 6).toFixed(2))
+  }
+];
+const USE_CUSTOM_GROUND_COLOR = q.has('ghue') || q.has('gsat');
 
 // ★地面粒子サイズの調整用（必要に応じてURLパラメータで上書きも可）
 const G_SIZE   = +(q.get('gsize')   || 2.5); // 基本半径（小さめ既定）
@@ -312,7 +325,12 @@ function seedGroundParticles(){
       let inside = false;
       for (const b of buildings){ if (pointInPolygon(gx, gy, b.poly)){ inside = true; break; } }
       if (inside) continue;
-      groundParticles.push({ x: gx, y: gy, seed: random(10000) });
+      groundParticles.push({
+        x: gx,
+        y: gy,
+        seed: random(10000),
+        palette: floor(random(GROUND_COLOR_VARIANTS.length))
+      });
     }
   }
 }
@@ -414,7 +432,12 @@ function drawGround(){
 
     // 白地に負けないような明度とアルファ（既存ロジック）
     const depth = pr.fade;                         // 近い:1 ←→ 遠い:~0.35
-    const L     = 70 + (1.0 - depth) * 14;        // 70〜84（遠景はちょい明るく）
+    const palette = GROUND_COLOR_VARIANTS[(gp.palette ?? 0) % GROUND_COLOR_VARIANTS.length] || GROUND_COLOR_VARIANTS[0];
+    const hue = USE_CUSTOM_GROUND_COLOR ? G_HUE : palette.h;
+    const satBase = USE_CUSTOM_GROUND_COLOR ? G_SAT : palette.s;
+    const litBase = USE_CUSTOM_GROUND_COLOR ? 70 : palette.l;
+    const S = Math.min(100, satBase + (1.0 - depth) * 6);  // 遠景ほんのり淡く
+    const L = Math.min(100, litBase + (1.0 - depth) * 8);  // 遠景は少し明るく
     const a     = G_ALPHA * (0.9*depth + 0.1);    // 遠景ほど薄く
     const wob   = 1 + 0.12 * sin(frameCount*0.02 + gp.seed);
 
@@ -435,7 +458,7 @@ function drawGround(){
     r = Math.max(0.25, r);
 
     // ===========================================================
-    fill(G_HUE, G_SAT, L, a);
+    fill(hue, S, L, a);
     circle(pr.x, pr.y, r);
   }
 }
