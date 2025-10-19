@@ -8,11 +8,69 @@ const DEG = Math.PI / 180;
 const TAU = Math.PI * 2;
 function rad(d){ return d * DEG; }
 
+// --- カラーパレット（HEX→HSL変換） ---
+function hexToHSL(hex){
+  const sanitized = hex.replace('#', '');
+  const bigint = parseInt(sanitized, 16);
+  const r = ((bigint >> 16) & 255) / 255;
+  const g = ((bigint >> 8) & 255) / 255;
+  const b = (bigint & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      default:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h /= 6;
+  }
+
+  return {
+    h: +(h * 360).toFixed(2),
+    s: +(s * 100).toFixed(2),
+    l: +(l * 100).toFixed(2)
+  };
+}
+
+const COLOR_PRIMARY_HEX = '#FFD400';
+const COLOR_ACCENT_HEX = '#F9DE83';
+const COLOR_PRIMARY = hexToHSL(COLOR_PRIMARY_HEX);
+const COLOR_ACCENT = hexToHSL(COLOR_ACCENT_HEX);
+const LIT_BASE_DEFAULT = +(COLOR_PRIMARY.l + 8).toFixed(2);
+const GROUND_SAT_DEFAULT = +((COLOR_ACCENT.s * 0.4)).toFixed(2);
+const PEOPLE_COLOR = {
+  h: COLOR_ACCENT.h,
+  s: Math.min(100, +(COLOR_ACCENT.s * 0.85).toFixed(2)),
+  l: Math.max(0, +(COLOR_ACCENT.l - 10).toFixed(2))
+};
+const RIPPLE_DOT_COLOR = {
+  h: COLOR_PRIMARY.h,
+  s: Math.min(100, +(COLOR_PRIMARY.s * 0.9).toFixed(2)),
+  l: Math.min(100, +(COLOR_PRIMARY.l + 20).toFixed(2))
+};
+const RIPPLE_RING_COLOR = {
+  h: COLOR_PRIMARY.h,
+  s: Math.min(100, +(COLOR_PRIMARY.s * 0.8).toFixed(2)),
+  l: Math.min(100, +(COLOR_PRIMARY.l + 15).toFixed(2))
+};
+
 // --- パラメータ ---
 const q = new URLSearchParams(location.search);
-const HUE        = +(q.get('hue') || 40.57);
-const SAT        = +(q.get('sat') || 75);
-const LIT_BASE   = +(q.get('lit') || 58);
+const HUE        = +(q.get('hue') || COLOR_PRIMARY.h);
+const SAT        = +(q.get('sat') || COLOR_PRIMARY.s);
+const LIT_BASE   = +(q.get('lit') || LIT_BASE_DEFAULT);
 const PD         = +(q.get('pd')  || 1);
 
 // 粒子配分
@@ -27,8 +85,8 @@ const G_MIN      = +(q.get('gmin')      || 1);   // 最小間隔の下限（超�
 const G_ALPHA    = +(q.get('galpha')    || 1); // 透明度ベース
 
 // ★地面の色（既定はHUEを流用）
-const G_HUE = +(q.get('ghue') ?? 40.57);  // 例: 青にしたい→ ?ghue=220
-const G_SAT = +(q.get('gsat') ?? 35);   // 地面の彩度（控えめが綺麗）例: ?gsat=35
+const G_HUE = +(q.get('ghue') ?? COLOR_ACCENT.h);  // 例: 青にしたい→ ?ghue=220
+const G_SAT = +(q.get('gsat') ?? GROUND_SAT_DEFAULT);   // 地面の彩度（控えめが綺麗）例: ?gsat=35
 
 // ★地面粒子サイズの調整用（必要に応じてURLパラメータで上書きも可）
 const G_SIZE   = +(q.get('gsize')   || 2.5); // 基本半径（小さめ既定）
@@ -320,7 +378,7 @@ function draw(){
 
     if (abs(p.x)>WORLD_W || abs(p.y)>WORLD_H){ const r=random(roads), a=r.pts[0], b=r.pts[1]||r.pts[0]; p.x=a.x; p.y=a.y; }
     const pr=project(p.x,p.y,0); if(!pr.visible) continue;
-    fill(HUE, 80, 50, 0.60*pr.fade);
+    fill(COLOR_ACCENT.h, COLOR_ACCENT.s, COLOR_ACCENT.l, 0.60*pr.fade);
     circle(pr.x, pr.y, 1.5*pr.scale);
   }
 
@@ -336,7 +394,7 @@ function draw(){
       p.tx=vx/L; p.ty=vy/L;
     }
     const pr=project(p.x,p.y,0); if(!pr.visible) continue;
-    fill(HUE, 68, 45, 0.68*pr.fade);
+    fill(PEOPLE_COLOR.h, PEOPLE_COLOR.s, PEOPLE_COLOR.l, 0.68*pr.fade);
     circle(pr.x, pr.y, 1.1*pr.scale);
   }
 
@@ -442,7 +500,7 @@ function drawRipples(){
         const y = w.y + Math.sin(a)*rr;
         const pr = project(x,y,0); if(!pr.visible) continue;
         const sz = 1.2 + 0.6 * Math.sin(a*2 + w.life*0.05);
-        fill(HUE, 90, 70, alpha*0.8*pr.fade);
+        fill(RIPPLE_DOT_COLOR.h, RIPPLE_DOT_COLOR.s, RIPPLE_DOT_COLOR.l, alpha*0.8*pr.fade);
         circle(pr.x, pr.y, sz*pr.scale);
       }
     }
@@ -458,7 +516,7 @@ function drawRipples(){
           const x = w.x + Math.cos(a)*rr;
           const y = w.y + Math.sin(a)*rr;
           const pr = project(x,y,0); if(!pr.visible) continue;
-          fill(HUE, 80, 65, a2*0.6*pr.fade);
+          fill(RIPPLE_RING_COLOR.h, RIPPLE_RING_COLOR.s, RIPPLE_RING_COLOR.l, a2*0.6*pr.fade);
           circle(pr.x, pr.y, (0.9+0.35*fade)*pr.scale);
         }
       }
