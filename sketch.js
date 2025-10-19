@@ -13,16 +13,16 @@ const q = new URLSearchParams(location.search);
 const HUE        = +(q.get('hue') || 40.57);
 const SAT        = +(q.get('sat') || 75);
 const LIT_BASE   = +(q.get('lit') || 58);
-const PD         = +(q.get('pd')  || (window.devicePixelRatio>1 ? 1.5 : 1));
+const PD         = +(q.get('pd')  || 0.75);
 
 // 粒子配分
-const DEN_EDGE   = +(q.get('denEdge')   || 2.2);
-const DEN_ROAD   = +(q.get('denRoad')   || 0.35);
-const DEN_PEOPLE = +(q.get('denPeople') || 0.35);
+const DEN_EDGE   = +(q.get('denEdge')   || 1.05);
+const DEN_ROAD   = +(q.get('denRoad')   || 0.18);
+const DEN_PEOPLE = +(q.get('denPeople') || 0.2);
 
 // ★地面（ここがポイント）
-const DEN_GROUND = +(q.get('denGround') || 1.0);  // 既定で見える程度
-const G_STEP     = +(q.get('gstep')     || 10);  // ベース間隔（小ほど濃い）
+const DEN_GROUND = +(q.get('denGround') || 0.48);  // 既定で見える程度
+const G_STEP     = +(q.get('gstep')     || 14);  // ベース間隔（小ほど濃い）
 const G_MIN      = +(q.get('gmin')      || 1);   // 最小間隔の下限（超重要）
 const G_ALPHA    = +(q.get('galpha')    || 1); // 透明度ベース
 
@@ -48,10 +48,10 @@ const W_DEPTH  = +(q.get('wdepth')  || 0.8);
 const RIPPLE   = (q.get('ripple') ?? '1') !== '0';
 const R_MODE   = (q.get('rmode')  || 'both');
 const R_MAX    = +(q.get('rmax')   || 40);
-const R_EMIT   = +(q.get('remit')  || 0.4);
+const R_EMIT   = +(q.get('remit')  || 0.32);
 const R_SPEED  = +(q.get('rspeed') || 20.0);
-const R_THICK  = +(q.get('rthick') || 28);
-const R_SEGS   = +(q.get('rsegs')  || 192);
+const R_THICK  = +(q.get('rthick') || 22);
+const R_SEGS   = +(q.get('rsegs')  || 96);
 const R_JIT    = +(q.get('rjit')   || 2.0);
 const R_ALPHA  = +(q.get('ralpha') || 1.0);
 const HUB_RATE = +(q.get('hubrate')|| 0.55);
@@ -112,9 +112,9 @@ function setup(){
   focal = (height*0.5)/Math.tan(cam.fov*0.5);
 
   const scaleA = Math.sqrt((width*height)/(1280*720));
-  N_ROAD    = floor(1300 * scaleA * DEN_ROAD);
-  N_PEOPLE  = floor( 500 * scaleA * DEN_PEOPLE);
-  N_RUNNERS = floor(1800 * scaleA * DEN_EDGE);
+  N_ROAD    = floor(900 * scaleA * DEN_ROAD);
+  N_PEOPLE  = floor(360 * scaleA * DEN_PEOPLE);
+  N_RUNNERS = floor(1200 * scaleA * DEN_EDGE);
 
   designCity();
   bakeLoops();
