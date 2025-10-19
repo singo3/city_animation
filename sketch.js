@@ -95,7 +95,7 @@ const GROUND_COLOR_VARIANTS = [
 const USE_CUSTOM_GROUND_COLOR = q.has('ghue') || q.has('gsat');
 
 // ★地面粒子サイズの調整用（必要に応じてURLパラメータで上書きも可）
-const G_SIZE   = +(q.get('gsize')   || 2.5); // 基本半径（小さめ既定）
+const G_SIZE   = +(q.get('gsize')   || 2.0); // 基本半径（より小さめ既定）
 const G_JIT    = +(q.get('gjit')    || 0.25); // 揺らぎ幅（0〜）
 const G_SHRINK = +(q.get('gshrink') || 1.0); // 遠景の最小倍率（0.0〜1.0）：遠くでどこまで小さくするか
 const G_GAMMA  = +(q.get('ggamma')  || 0.2);  // 距離減衰のカーブ（>1で遠景をさらに小さく）
@@ -159,8 +159,8 @@ let pointerSX=0, pointerSY=0;
 let pointerWX=0, pointerWY=0, prevWX=0, prevWY=0, mouseVX=0, mouseVY=0, mouseSpeed=0;
 
 // エッジ表示
-const ER_SIZE_H = +(q.get('ersizeh') || 2.8);
-const ER_SIZE_V = +(q.get('ersizev') || 2.3);
+const ER_SIZE_H = +(q.get('ersizeh') || 2.3);
+const ER_SIZE_V = +(q.get('ersizev') || 1.9);
 const ER_ALPHA  = +(q.get('eralpha') || 0.95);
 const ER_RING   = +(q.get('ering')   || 6.0);
 const ER_JIT    = +(q.get('erjit')   || 1.0);
@@ -368,7 +368,7 @@ function draw(){
     const alpha= ER_ALPHA * tw * pr.fade;
 
     fill(HUE, SAT*0.9, Math.min(95, depthLightness(z,y)+12), alpha*0.16);
-    circle(pr.x, pr.y, size*1.9);
+    circle(pr.x, pr.y, size*1.7);
 
     fill(HUE, SAT, depthLightness(z,y), alpha);
     circle(pr.x, pr.y, size);
@@ -392,7 +392,7 @@ function draw(){
     const pr=project(p.x,p.y,0); if(!pr.visible) continue;
     const c = p.color || COLOR_ACCENT;
     fill(c.h, c.s, c.l, 0.60*pr.fade);
-    circle(pr.x, pr.y, 1.5*pr.scale);
+    circle(pr.x, pr.y, 1.25*pr.scale);
   }
 
   // 人
@@ -408,7 +408,7 @@ function draw(){
     }
     const pr=project(p.x,p.y,0); if(!pr.visible) continue;
     fill(PEOPLE_COLOR.h, PEOPLE_COLOR.s, PEOPLE_COLOR.l, 0.68*pr.fade);
-    circle(pr.x, pr.y, 1.1*pr.scale);
+    circle(pr.x, pr.y, 0.9*pr.scale);
   }
 
   // 波紋
