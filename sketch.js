@@ -89,16 +89,8 @@ const G_ALPHA    = +(q.get('galpha')    || 1); // 透明度ベース
 const G_HUE = +(q.get('ghue') ?? COLOR_ACCENT.h);  // 例: 青にしたい→ ?ghue=220
 const G_SAT = +(q.get('gsat') ?? GROUND_SAT_DEFAULT);   // 地面の彩度（控えめが綺麗）例: ?gsat=35
 const GROUND_COLOR_VARIANTS = [
-  {
-    h: COLOR_PRIMARY.h,
-    s: Math.min(100, +(COLOR_PRIMARY.s * 0.92).toFixed(2)),
-    l: Math.min(100, +(COLOR_PRIMARY.l + 4).toFixed(2))
-  },
-  {
-    h: COLOR_ACCENT.h,
-    s: Math.min(100, +(COLOR_ACCENT.s * 0.98).toFixed(2)),
-    l: Math.min(100, +(COLOR_ACCENT.l + 6).toFixed(2))
-  }
+  COLOR_PRIMARY,
+  COLOR_ACCENT
 ];
 const USE_CUSTOM_GROUND_COLOR = q.has('ghue') || q.has('gsat');
 
@@ -432,13 +424,23 @@ function drawGround(){
 
     // 白地に負けないような明度とアルファ（既存ロジック）
     const depth = pr.fade;                         // 近い:1 ←→ 遠い:~0.35
-    const palette = GROUND_COLOR_VARIANTS[(gp.palette ?? 0) % GROUND_COLOR_VARIANTS.length] || GROUND_COLOR_VARIANTS[0];
-    const hue = USE_CUSTOM_GROUND_COLOR ? G_HUE : palette.h;
-    const satBase = USE_CUSTOM_GROUND_COLOR ? G_SAT : palette.s;
-    const litBase = USE_CUSTOM_GROUND_COLOR ? 70 : palette.l;
-    const S = Math.min(100, satBase + (1.0 - depth) * 6);  // 遠景ほんのり淡く
-    const L = Math.min(100, litBase + (1.0 - depth) * 8);  // 遠景は少し明るく
-    const a     = G_ALPHA * (0.9*depth + 0.1);    // 遠景ほど薄く
+    const paletteIndex = (gp.palette ?? 0) % GROUND_COLOR_VARIANTS.length;
+    const palette = GROUND_COLOR_VARIANTS[paletteIndex] || GROUND_COLOR_VARIANTS[0];
+
+    let hue, S, L, a;
+    if (USE_CUSTOM_GROUND_COLOR){
+      const satBase = G_SAT;
+      const litBase = 70;
+      hue = G_HUE;
+      S = Math.min(100, satBase + (1.0 - depth) * 6);  // 遠景ほんのり淡く
+      L = Math.min(100, litBase + (1.0 - depth) * 8);  // 遠景は少し明るく
+      a = G_ALPHA * (0.9*depth + 0.1);    // 遠景ほど薄く
+    } else {
+      hue = palette.h;
+      S = palette.s;
+      L = palette.l;
+      a = G_ALPHA; // 既定色はHEXそのままの見た目に
+    }
     const wob   = 1 + 0.12 * sin(frameCount*0.02 + gp.seed);
 
     // === サイズ計算（小さく＋距離減衰）========================
