@@ -48,6 +48,7 @@ const COLOR_PRIMARY_HEX = '#FFD400';
 const COLOR_ACCENT_HEX = '#F9DE83';
 const COLOR_PRIMARY = hexToHSL(COLOR_PRIMARY_HEX);
 const COLOR_ACCENT = hexToHSL(COLOR_ACCENT_HEX);
+const ROAD_COLORS = [COLOR_PRIMARY, COLOR_ACCENT];
 const LIT_BASE_DEFAULT = +(COLOR_PRIMARY.l + 8).toFixed(2);
 const GROUND_SAT_DEFAULT = +((COLOR_ACCENT.s * 0.4)).toFixed(2);
 const PEOPLE_COLOR = {
@@ -252,7 +253,8 @@ function seedParticles(){
     const t = roadTargets[floor(random(roadTargets.length))];
     roadParticles.push({
       x: t.x + random(-6,6), y: t.y + random(-6,6), z: 0,
-      tx: t.tx, ty: t.ty, speed: random(0.8,1.6), seed: random(1000), maxDrift: random(18,28)
+      tx: t.tx, ty: t.ty, speed: random(0.8,1.6), seed: random(1000), maxDrift: random(18,28),
+      color: ROAD_COLORS[i % ROAD_COLORS.length]
     });
   }
   for (let i=0; i<N_PEOPLE; i++){
@@ -378,7 +380,8 @@ function draw(){
 
     if (abs(p.x)>WORLD_W || abs(p.y)>WORLD_H){ const r=random(roads), a=r.pts[0], b=r.pts[1]||r.pts[0]; p.x=a.x; p.y=a.y; }
     const pr=project(p.x,p.y,0); if(!pr.visible) continue;
-    fill(COLOR_ACCENT.h, COLOR_ACCENT.s, COLOR_ACCENT.l, 0.60*pr.fade);
+    const c = p.color || COLOR_ACCENT;
+    fill(c.h, c.s, c.l, 0.60*pr.fade);
     circle(pr.x, pr.y, 1.5*pr.scale);
   }
 
